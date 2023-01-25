@@ -1,5 +1,6 @@
 use actix_cors::Cors;
-use actix_web::{get, middleware::Logger, App, HttpResponse, HttpServer, Responder};
+use actix_web::{get, middleware::Logger, App, HttpResponse, HttpServer, Responder, web};
+use serde::Deserialize;
 
 struct AppState {
     pub downstream: String,
@@ -10,8 +11,34 @@ async fn status() -> impl Responder {
     HttpResponse::Ok().body("OK")
 }
 
+#[derive(Deserialize, Clone)]
+struct WmsParams {
+    service: String,
+    request: String,
+    version: String,
+    layers: String,
+    styles: String,
+    bbox: String,
+    width: String,
+    height: String,
+    format: String,
+    transparent: String,
+    crs: String,
+    srs: String,
+    exceptions: String,
+    time: String,
+    elevation: String,
+    colorscalerange: String,
+    abovemaxcolor: String,
+    belowmincolor: String,
+}
+
+impl WmsParams {
+    
+}
+
 #[get("/wms")]
-async fn wms() -> impl Responder {
+async fn wms(params: web::Query<WmsParams>) -> impl Responder {
     HttpResponse::Ok().body("WMS")
 }
 
