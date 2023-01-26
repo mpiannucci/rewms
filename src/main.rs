@@ -1,7 +1,24 @@
+use std::time::Duration;
+
 use actix_cors::Cors;
-use actix_web::{get, middleware::Logger, App, HttpResponse, HttpServer, Responder, web::{self, Data}, HttpRequest, error};
-use reqwest::Client;
+use actix_web::{
+    error, get,
+    middleware::Logger,
+    web::{self, Data},
+    App, HttpRequest, HttpResponse, HttpServer, Responder,
+};
+use awc::Client;
 use serde::Deserialize;
+
+async fn proxy(client: &Client, url: String) -> actix_web::Result<HttpResponse> {
+    client
+        .get(url)
+        .timeout(Duration::from_secs(60))
+        .send()
+        .await
+        .map_err(error::ErrorInternalServerError)
+        .and_then(|resp| Ok::<HttpResponse, error::Error>(HttpResponse::Ok().streaming(resp)))
+}
 
 struct AppState {
     pub downstream: String,
@@ -16,37 +33,53 @@ async fn status() -> impl Responder {
 
 #[derive(Deserialize, Clone, Debug)]
 struct WmsParams {
+    #[serde(alias = "service", alias = "SERVICE")]
     service: String,
+    #[serde(alias = "request", alias = "REQUEST")]
     request: String,
+    #[serde(alias = "version", alias = "VERSION")]
     version: String,
+    #[serde(alias = "layers", alias = "LAYERS")]
     layers: String,
-    styles: String,
+    #[serde(alias = "styles", alias = "STYLES")]
+    styles: Option<String>,
+    #[serde(alias = "bbox", alias = "BBOX")]
     bbox: String,
-    width: String,
-    height: String,
-    format: String,
-    transparent: String,
+    #[serde(alias = "width", alias = "WIDTH")]
+    width: u32,
+    #[serde(alias = "height", alias = "HEIGHT")]
+    height: u32,
+    #[serde(alias = "srs", alias = "SRS")]
     srs: String,
-    time: String,
-    elevation: Option<String>,
-    colorscalerange: String,
-    abovemaxcolor: Option<String>,
-    belowmincolor: Option<String>,
+    #[serde(alias = "time", alias = "TIME")]
+    time: Option<String>,
+    #[serde(alias = "elevation", alias = "ELEVATION")]
+    elevation: Option<i32>,
+    #[serde(alias = "colorscalerange", alias = "COLORSCALERANGE")]
+    colorscalerange: Option<String>,
+}
+
+impl WmsParams {
+    fn passthrough_request(&self) -> bool {
+        let Some(styles) = self.styles.as_ref() else {
+            return true;
+        };
+
+        self.request != "GetMap" || (!styles.starts_with("values/") && !styles.starts_with("particles/"))
+    }
 }
 
 #[get("/wms/")]
-async fn wms(app_state: web::Data<AppState>, req: HttpRequest, params: web::Query<WmsParams>) -> impl Responder {
-    if params.request == "GetMap" {
-        // Return downstream response
+async fn wms(
+    client: web::Data<Client>,
+    app_state: web::Data<AppState>,
+    req: HttpRequest,
+    params: web::Query<WmsParams>,
+) -> actix_web::Result<HttpResponse> {
+    // For now we are only hijacking requests if the user is asking for a values or particles style
+    if params.passthrough_request() {
         let downstream_request = format!("{}/?{}", app_state.downstream, req.query_string());
-
-        let client = awc::Client::new();
-        return client
-            .get(downstream_request)
-            .send()
-            .await
-            .map_err(error::ErrorInternalServerError)
-            .and_then(|resp| Ok::<HttpResponse, error::Error>(HttpResponse::Ok().streaming(resp)));
+        return proxy(client.as_ref(), downstream_request).await;
     }
 
     let parm = format!("{}", params.request);
@@ -73,6 +106,7 @@ async fn main() -> std::io::Result<()> {
             .app_data(Data::new(AppState {
                 downstream: downstream.clone(),
             }))
+            .app_data(Data::new(Client::default()))
             .wrap(Logger::default())
             .wrap(Cors::permissive())
             .service(status)
