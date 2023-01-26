@@ -1,38 +1,52 @@
-use actix_web::{get, web, HttpRequest, HttpResponse};
+use std::iter::once;
+
+use actix_web::{get, http::Uri, web, HttpRequest, HttpResponse};
 use awc::Client;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
-use crate::common::{AppState, proxy};
-
+use crate::common::{proxy, AppState};
 
 // https://eds.ioos.us/wms/?service=WMS&request=GetMap&version=1.1.1&layers=GFS_WAVE_ATLANTIC/Significant_height_of_combined_wind_waves_and_swell_surface&styles=raster%2Fx-Occam&colorscalerange=0%2C10&units=m&width=256&height=256&format=image/png&transparent=true&time=2023-01-26T00:00:00.000Z&srs=EPSG:3857&bbox=-7827151.696402049,4383204.9499851465,-7514065.628545966,4696291.017841227
 
+#[derive(Deserialize, Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct WmsMetadata {
+    pub scale_range: (f64, f64),
+    pub nearest_time_iso: String,
+    pub units: String,
+}
+
+#[derive(Deserialize, Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct WmsMinMax {
+    pub min: f64,
+    pub max: f64,
+}
+
 #[derive(Deserialize, Clone, Debug)]
-struct WmsParams {
-    #[serde(alias = "service", alias = "SERVICE")]
-    service: String,
+pub struct WmsParams {
     #[serde(alias = "request", alias = "REQUEST")]
-    request: String,
+    pub request: String,
     #[serde(alias = "version", alias = "VERSION")]
-    version: String,
+    pub version: String,
     #[serde(alias = "layers", alias = "LAYERS")]
-    layers: String,
+    pub layers: String,
     #[serde(alias = "styles", alias = "STYLES")]
-    styles: Option<String>,
+    pub styles: Option<String>,
     #[serde(alias = "bbox", alias = "BBOX")]
-    bbox: String,
+    pub bbox: String,
     #[serde(alias = "width", alias = "WIDTH")]
-    width: u32,
+    pub width: u32,
     #[serde(alias = "height", alias = "HEIGHT")]
-    height: u32,
+    pub height: u32,
     #[serde(alias = "srs", alias = "SRS")]
-    srs: String,
+    pub srs: String,
     #[serde(alias = "time", alias = "TIME")]
-    time: Option<String>,
+    pub time: Option<String>,
     #[serde(alias = "elevation", alias = "ELEVATION")]
-    elevation: Option<i32>,
+    pub elevation: Option<i32>,
     #[serde(alias = "colorscalerange", alias = "COLORSCALERANGE")]
-    colorscalerange: Option<String>,
+    pub colorscalerange: Option<String>,
 }
 
 impl WmsParams {
@@ -41,7 +55,71 @@ impl WmsParams {
             return true;
         };
 
-        self.request != "GetMap" || (!styles.starts_with("values/") && !styles.starts_with("particles/"))
+        self.request != "GetMap"
+            || (!styles.starts_with("values/") && !styles.starts_with("particles/"))
+    }
+
+    pub fn parse_layers(&self) -> Vec<String> {
+        self.layers
+            .split(",")
+            .flat_map(|l| {
+                if l.ends_with("-group") {
+                    l.split("group")
+                        .next()
+                        .unwrap()
+                        .split(":")
+                        .map(|s| s.to_string())
+                        .collect()
+                } else {
+                    vec![l.to_string()]
+                }
+            })
+            .collect()
+    }
+
+    pub fn parse_colorscalerange(&self) -> (f64, f64) {
+        let range: Vec<f64> = self
+            .colorscalerange
+            .as_ref()
+            .unwrap_or(&"".to_string())
+            .split(",")
+            .map(|s| s.parse::<f64>().unwrap())
+            .collect();
+        (range[0], range[1])
+    }
+
+    pub fn get_metadata_url(&self, downstream: &str, layer: &str) -> Uri {
+        Uri::builder()
+            .scheme("https")
+            .authority(downstream.split("/").next().unwrap())
+            .path_and_query(format!(
+                "/ncWMS2/wms/?service=WMS&request=GetMetadata&version=1.1.1&item=layerDetails&layername={layer}",
+            ))
+            .build()
+            .unwrap()
+    }
+
+    pub fn get_minmax_url(&self, downstream: &str, layer: &str) -> Uri {
+        Uri::builder()
+            .scheme("https")
+            .authority(downstream.split("/").next().unwrap())
+            .path_and_query(format!(
+                "/ncWMS2/wms/?service=WMS&request=GetMetadata&version=1.1.1&item=minmax&layername={layer}&layers={layer}&styles=&srs={}&bbox={}&width={}&height={}", self.srs, self.bbox, self.width, self.height
+            ))
+            .build()
+            .unwrap()
+    }
+
+    pub fn get_reference_map_url(&self, downstream: &str, layer: &str, minmax: &WmsMinMax) -> Uri {
+        Uri::builder()
+        .scheme("https")
+        .authority(downstream.split("/").next().unwrap())
+        .path_and_query(format!(
+            "/ncWMS2/wms/?service=WMS&request=GetMap&version=1.1.1&layers={layer}&styles=raster/seq-Greys-inv&format=image/png;mode=32bit&transparent=true&srs={}&bbox={}&width={}&height={}&colorscalerange={},{}",
+            self.srs, self.bbox, self.width, self.height, minmax.min, minmax.max
+        ))
+        .build()
+        .unwrap()
     }
 }
 
@@ -58,6 +136,15 @@ pub async fn wms(
         return proxy(client.as_ref(), downstream_request).await;
     }
 
-    let parm = format!("{}", params.request);
+    let layers = params.parse_layers();
+
+    let parm = format!(
+        "{}",
+        params.get_reference_map_url(
+            &app_state.downstream,
+            &layers[0],
+            &WmsMinMax { min: 0., max: 6. }
+        )
+    );
     Ok(HttpResponse::Ok().body(parm))
 }

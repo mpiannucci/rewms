@@ -44,6 +44,7 @@ async fn main() -> std::io::Result<()> {
             .service(wms::wms)
     })
     .bind(("127.0.0.1", bind_port))?
+    .workers(1)
     .run()
     .await
 }
