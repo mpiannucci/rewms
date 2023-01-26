@@ -1,7 +1,10 @@
-use actix_web::{get, http::Uri, web, HttpRequest, HttpResponse};
+use std::{time::Duration, io::Cursor};
+
+use actix_web::{get, http::Uri, web::{self, Bytes}, HttpRequest, HttpResponse};
 use awc::Client;
 use futures::future::join_all;
-use itertools::Itertools;
+use image::ImageOutputFormat;
+use log::warn;
 use serde::{Deserialize, Serialize};
 
 use crate::common::{proxy, AppState};
@@ -142,22 +145,18 @@ pub async fn wms(
     let metadata_futures = layers.iter().flat_map(|l| {
         let metadata_url = params.get_metadata_url(&app_state.downstream, l);
         let minmax_url = params.get_minmax_url(&app_state.downstream, l);
-        let metadata = client.get(metadata_url).send();
-        let minmax = client.get(minmax_url).send();
+        let metadata = client
+            .get(metadata_url)
+            .timeout(Duration::from_secs(60))
+            .send();
+        let minmax = client
+            .get(minmax_url)
+            .timeout(Duration::from_secs(60))
+            .send();
         vec![metadata, minmax]
     });
 
     let mut metadata = join_all(metadata_futures).await;
-    // let metadata_futures = metadata
-    //     .iter_mut()
-    //     .enumerate()
-    //     .step_by(2)
-    //     .flat_map(|(i, m)| {
-    //         let meta = m.as_mut().unwrap().json::<WmsMetadata>();
-    //         let minmax = metadata[i + 1].as_mut().unwrap().json::<WmsMinMax>();
-    //         vec![meta]
-    //     });
-    // let metadata = join_all(metadata_futures).await;
 
     let mut metadata_unpacked = vec![];
     let mut minmax_unpacked = vec![];
@@ -183,9 +182,35 @@ pub async fn wms(
         .map(|m| m.as_ref().unwrap().clone())
         .collect::<Vec<_>>();
 
-    let parm = format!(
-        "{}",
-        params.get_reference_map_url(&app_state.downstream, "", &WmsMinMax { min: 0., max: 6. })
-    );
-    Ok(HttpResponse::Ok().body(parm))
+    let reference_url_futures = layers.iter().enumerate().map(|(i, l)| {
+        let minmax = &minmax_unpacked[i];
+        let url = params.get_reference_map_url(&app_state.downstream, l, minmax);
+        warn!("{}", url.to_string());
+        client.get(url).timeout(Duration::from_secs(60)).send()
+    });
+
+    let mut raw_reference_images = join_all(reference_url_futures).await;
+    let reference_images = raw_reference_images
+        .iter_mut()
+        .map(|r| r.as_mut().unwrap().body());
+
+    let mut reference_images = join_all(reference_images).await
+        .iter()
+        .map(|r| {
+            image::load_from_memory(r.as_ref().unwrap().as_ref()).unwrap().to_rgba8()
+        })
+        .collect::<Vec<_>>();
+
+    let reference_image = reference_images.pop().unwrap();
+    let _ = reference_image.save("test.png");
+
+    let mut w = Cursor::new(Vec::new());
+    reference_image.write_to(&mut w, ImageOutputFormat::Png).unwrap();
+    let raw = w.into_inner();
+
+    let response = HttpResponse::Ok()
+        .content_type("image/png;mode=32bit")
+        .body(raw);
+
+    Ok(response)
 }
