@@ -139,35 +139,53 @@ pub async fn wms(
     }
 
     let layers = params.parse_layers();
-    let metadata = layers
-        .iter()
-        .flat_map(|l| {
-            let metadata_url = params.get_metadata_url(&app_state.downstream, l);
-            let minmax_url = params.get_minmax_url(&app_state.downstream, l);
-            let metadata = client
-                .get(metadata_url)
-                .send();
-            let minmax = client
-                .get(minmax_url)
-                .send();
-            vec![metadata, minmax]
-        });
-
-    let metadata = join_all(metadata).await;
-    let metadata = metadata
-        .iter()
-        .tuples()
-        .map(|(metadata_payload, minmax_payload): (_, _)| {
-        // TODO
+    let metadata_futures = layers.iter().flat_map(|l| {
+        let metadata_url = params.get_metadata_url(&app_state.downstream, l);
+        let minmax_url = params.get_minmax_url(&app_state.downstream, l);
+        let metadata = client.get(metadata_url).send();
+        let minmax = client.get(minmax_url).send();
+        vec![metadata, minmax]
     });
+
+    let mut metadata = join_all(metadata_futures).await;
+    // let metadata_futures = metadata
+    //     .iter_mut()
+    //     .enumerate()
+    //     .step_by(2)
+    //     .flat_map(|(i, m)| {
+    //         let meta = m.as_mut().unwrap().json::<WmsMetadata>();
+    //         let minmax = metadata[i + 1].as_mut().unwrap().json::<WmsMinMax>();
+    //         vec![meta]
+    //     });
+    // let metadata = join_all(metadata_futures).await;
+
+    let mut metadata_unpacked = vec![];
+    let mut minmax_unpacked = vec![];
+    for (i, m) in metadata.iter_mut().enumerate() {
+        if i % 2 == 0 {
+            let meta = m.as_mut().unwrap().json::<WmsMetadata>();
+            metadata_unpacked.push(meta);
+        } else {
+            let minmax = m.as_mut().unwrap().json::<WmsMinMax>();
+            minmax_unpacked.push(minmax);
+        }
+    }
+
+    let metadata_unpacked = join_all(metadata_unpacked)
+        .await
+        .iter()
+        .map(|m| m.as_ref().unwrap().clone())
+        .collect::<Vec<_>>();
+
+    let minmax_unpacked = join_all(minmax_unpacked)
+        .await
+        .iter()
+        .map(|m| m.as_ref().unwrap().clone())
+        .collect::<Vec<_>>();
 
     let parm = format!(
         "{}",
-        params.get_reference_map_url(
-            &app_state.downstream,
-            "",
-            &WmsMinMax { min: 0., max: 6. }
-        )
+        params.get_reference_map_url(&app_state.downstream, "", &WmsMinMax { min: 0., max: 6. })
     );
     Ok(HttpResponse::Ok().body(parm))
 }
