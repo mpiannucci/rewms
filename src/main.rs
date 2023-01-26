@@ -1,5 +1,6 @@
 use actix_cors::Cors;
-use actix_web::{get, middleware::Logger, App, HttpResponse, HttpServer, Responder, web};
+use actix_web::{get, middleware::Logger, App, HttpResponse, HttpServer, Responder, web::{self, Data}, HttpRequest, error};
+use reqwest::Client;
 use serde::Deserialize;
 
 struct AppState {
@@ -11,7 +12,9 @@ async fn status() -> impl Responder {
     HttpResponse::Ok().body("OK")
 }
 
-#[derive(Deserialize, Clone)]
+// https://eds.ioos.us/wms/?service=WMS&request=GetMap&version=1.1.1&layers=GFS_WAVE_ATLANTIC/Significant_height_of_combined_wind_waves_and_swell_surface&styles=raster%2Fx-Occam&colorscalerange=0%2C10&units=m&width=256&height=256&format=image/png&transparent=true&time=2023-01-26T00:00:00.000Z&srs=EPSG:3857&bbox=-7827151.696402049,4383204.9499851465,-7514065.628545966,4696291.017841227
+
+#[derive(Deserialize, Clone, Debug)]
 struct WmsParams {
     service: String,
     request: String,
@@ -23,23 +26,31 @@ struct WmsParams {
     height: String,
     format: String,
     transparent: String,
-    crs: String,
     srs: String,
-    exceptions: String,
     time: String,
-    elevation: String,
+    elevation: Option<String>,
     colorscalerange: String,
-    abovemaxcolor: String,
-    belowmincolor: String,
+    abovemaxcolor: Option<String>,
+    belowmincolor: Option<String>,
 }
 
-impl WmsParams {
-    
-}
+#[get("/wms/")]
+async fn wms(app_state: web::Data<AppState>, req: HttpRequest, params: web::Query<WmsParams>) -> impl Responder {
+    if params.request == "GetMap" {
+        // Return downstream response
+        let downstream_request = format!("{}/?{}", app_state.downstream, req.query_string());
 
-#[get("/wms")]
-async fn wms(params: web::Query<WmsParams>) -> impl Responder {
-    HttpResponse::Ok().body("WMS")
+        let client = awc::Client::new();
+        return client
+            .get(downstream_request)
+            .send()
+            .await
+            .map_err(error::ErrorInternalServerError)
+            .and_then(|resp| Ok::<HttpResponse, error::Error>(HttpResponse::Ok().streaming(resp)));
+    }
+
+    let parm = format!("{}", params.request);
+    Ok(HttpResponse::Ok().body(parm))
 }
 
 #[actix_web::main]
@@ -59,9 +70,9 @@ async fn main() -> std::io::Result<()> {
 
     HttpServer::new(move || {
         App::new()
-            .app_data(AppState {
+            .app_data(Data::new(AppState {
                 downstream: downstream.clone(),
-            })
+            }))
             .wrap(Logger::default())
             .wrap(Cors::permissive())
             .service(status)
