@@ -1,7 +1,7 @@
-use std::iter::once;
-
 use actix_web::{get, http::Uri, web, HttpRequest, HttpResponse};
 use awc::Client;
+use futures::future::join_all;
+use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 
 use crate::common::{proxy, AppState};
@@ -47,6 +47,8 @@ pub struct WmsParams {
     pub elevation: Option<i32>,
     #[serde(alias = "colorscalerange", alias = "COLORSCALERANGE")]
     pub colorscalerange: Option<String>,
+    #[serde(alias = "units", alias = "UNITS")]
+    pub units: Option<String>,
 }
 
 impl WmsParams {
@@ -137,12 +139,33 @@ pub async fn wms(
     }
 
     let layers = params.parse_layers();
+    let metadata = layers
+        .iter()
+        .flat_map(|l| {
+            let metadata_url = params.get_metadata_url(&app_state.downstream, l);
+            let minmax_url = params.get_minmax_url(&app_state.downstream, l);
+            let metadata = client
+                .get(metadata_url)
+                .send();
+            let minmax = client
+                .get(minmax_url)
+                .send();
+            vec![metadata, minmax]
+        });
+
+    let metadata = join_all(metadata).await;
+    let metadata = metadata
+        .iter()
+        .tuples()
+        .map(|(metadata_payload, minmax_payload): (_, _)| {
+        // TODO
+    });
 
     let parm = format!(
         "{}",
         params.get_reference_map_url(
             &app_state.downstream,
-            &layers[0],
+            "",
             &WmsMinMax { min: 0., max: 6. }
         )
     );
