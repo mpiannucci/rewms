@@ -1,6 +1,7 @@
 use std::{time::Duration, io::Cursor};
 
-use actix_web::{get, http::Uri, web::{self, Bytes}, HttpRequest, HttpResponse};
+use rayon::prelude::*;
+use actix_web::{get, http::Uri, web::{self}, HttpRequest, HttpResponse};
 use awc::Client;
 use futures::future::join_all;
 use image::ImageOutputFormat;
@@ -10,6 +11,8 @@ use serde::{Deserialize, Serialize};
 use crate::common::{proxy, AppState};
 
 // https://eds.ioos.us/wms/?service=WMS&request=GetMap&version=1.1.1&layers=GFS_WAVE_ATLANTIC/Significant_height_of_combined_wind_waves_and_swell_surface&styles=raster%2Fx-Occam&colorscalerange=0%2C10&units=m&width=256&height=256&format=image/png&transparent=true&time=2023-01-26T00:00:00.000Z&srs=EPSG:3857&bbox=-7827151.696402049,4383204.9499851465,-7514065.628545966,4696291.017841227
+
+
 
 #[derive(Deserialize, Serialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
@@ -176,7 +179,7 @@ pub async fn wms(
         .map(|m| m.as_ref().unwrap().clone())
         .collect::<Vec<_>>();
 
-    let minmax_unpacked = join_all(minmax_unpacked)
+    let mut minmax_unpacked = join_all(minmax_unpacked)
         .await
         .iter()
         .map(|m| m.as_ref().unwrap().clone())
@@ -203,6 +206,21 @@ pub async fn wms(
 
     let reference_image = reference_images.pop().unwrap();
     let _ = reference_image.save("test.png");
+
+    let ref_min_max = minmax_unpacked.pop().unwrap();
+
+    let image_data = (0..params.width * params.height * 4)
+        .into_par_iter()
+        .enumerate()
+        .step_by(4)
+        .flat_map(|(i, _)| {
+            let x = i as u32 % params.width;
+            let y = i as u32 / params.width;
+            let raw_value = reference_image.get_pixel(x, y).0[0];
+            let v: f32 = (raw_value as f32 / 255.0) * (ref_min_max.max as f32 - ref_min_max.min as f32) + ref_min_max.min as f32;
+            v.to_be_bytes()
+        })
+        .collect::<Vec<_>>();
 
     let mut w = Cursor::new(Vec::new());
     reference_image.write_to(&mut w, ImageOutputFormat::Png).unwrap();
