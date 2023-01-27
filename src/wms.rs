@@ -4,7 +4,7 @@ use rayon::prelude::*;
 use actix_web::{get, http::Uri, web::{self}, HttpRequest, HttpResponse};
 use awc::Client;
 use futures::future::join_all;
-use image::ImageOutputFormat;
+use image::{ImageOutputFormat, Rgba};
 use log::warn;
 use serde::{Deserialize, Serialize};
 
@@ -214,16 +214,18 @@ pub async fn wms(
         .enumerate()
         .step_by(4)
         .flat_map(|(i, _)| {
-            let x = i as u32 % params.width;
-            let y = i as u32 / params.width;
+            let x = (i / 4) as u32 % params.width;
+            let y = (i / 4) as u32 / params.width;
             let raw_value = reference_image.get_pixel(x, y).0[0];
             let v: f32 = (raw_value as f32 / 255.0) * (ref_min_max.max as f32 - ref_min_max.min as f32) + ref_min_max.min as f32;
             v.to_be_bytes()
         })
-        .collect::<Vec<_>>();
+        .collect::<Vec<u8>>();
+
+    let im = image::RgbaImage::from_vec(params.width, params.height, image_data).unwrap();
 
     let mut w = Cursor::new(Vec::new());
-    reference_image.write_to(&mut w, ImageOutputFormat::Png).unwrap();
+    im.write_to(&mut w, ImageOutputFormat::Png).unwrap();
     let raw = w.into_inner();
 
     let response = HttpResponse::Ok()
