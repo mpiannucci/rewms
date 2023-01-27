@@ -1,18 +1,21 @@
-use std::{time::Duration, io::Cursor};
+use std::{io::Cursor, time::Duration};
 
-use rayon::prelude::*;
-use actix_web::{get, http::Uri, web::{self}, HttpRequest, HttpResponse};
+use actix_web::{
+    get,
+    http::Uri,
+    web::{self},
+    HttpRequest, HttpResponse,
+};
 use awc::Client;
 use futures::future::join_all;
 use image::{ImageOutputFormat, Rgba};
 use log::warn;
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::common::{proxy, AppState};
 
 // https://eds.ioos.us/wms/?service=WMS&request=GetMap&version=1.1.1&layers=GFS_WAVE_ATLANTIC/Significant_height_of_combined_wind_waves_and_swell_surface&styles=raster%2Fx-Occam&colorscalerange=0%2C10&units=m&width=256&height=256&format=image/png&transparent=true&time=2023-01-26T00:00:00.000Z&srs=EPSG:3857&bbox=-7827151.696402049,4383204.9499851465,-7514065.628545966,4696291.017841227
-
-
 
 #[derive(Deserialize, Serialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
@@ -51,8 +54,6 @@ pub struct WmsParams {
     pub time: Option<String>,
     #[serde(alias = "elevation", alias = "ELEVATION")]
     pub elevation: Option<i32>,
-    #[serde(alias = "colorscalerange", alias = "COLORSCALERANGE")]
-    pub colorscalerange: Option<String>,
     #[serde(alias = "units", alias = "UNITS")]
     pub units: Option<String>,
 }
@@ -108,24 +109,40 @@ impl WmsParams {
     }
 
     pub fn get_minmax_url(&self, downstream: &str, layer: &str) -> Uri {
+        let elevation = self
+            .elevation
+            .map(|e| format!("&elevation={e}"))
+            .unwrap_or("".to_string());
+        let time = self
+            .time
+            .map(|t| format!("&time={t}"))
+            .unwrap_or("".to_string());
+        let path = format!("/ncWMS2/wms/?service=WMS&request=GetMetadata&version=1.1.1&item=minmax&layername={layer}&layers={layer}&styles=&srs={srs}&bbox={bbox}&width={width}&height={height}{elevation}{time}", srs=self.srs, bbox=self.bbox, width=self.width, height=self.height);
+
         Uri::builder()
             .scheme("https")
             .authority(downstream.split("/").next().unwrap())
-            .path_and_query(format!(
-                "/ncWMS2/wms/?service=WMS&request=GetMetadata&version=1.1.1&item=minmax&layername={layer}&layers={layer}&styles=&srs={}&bbox={}&width={}&height={}", self.srs, self.bbox, self.width, self.height
-            ))
+            .path_and_query(path)
             .build()
             .unwrap()
     }
 
     pub fn get_reference_map_url(&self, downstream: &str, layer: &str, minmax: &WmsMinMax) -> Uri {
+        let elevation = self
+            .elevation
+            .map(|e| format!("&elevation={e}"))
+            .unwrap_or("".to_string());
+        let time = self
+            .time
+            .map(|t| format!("&time={t}"))
+            .unwrap_or("".to_string());
+        let path = format!("/ncWMS2/wms/?service=WMS&request=GetMap&version=1.1.1&layers={layer}&styles=raster/seq-Greys-inv&format=image/png;mode=32bit&transparent=true&srs={srs}&bbox={bbox}&width={width}&height={height}&colorscalerange={min},{max}&numcolorbands=250{elevation}{time}",
+        srs=self.srs, bbox=self.bbox, width=self.width, height=self.height, min=-minmax.min, max=minmax.max);
+
         Uri::builder()
         .scheme("https")
         .authority(downstream.split("/").next().unwrap())
-        .path_and_query(format!(
-            "/ncWMS2/wms/?service=WMS&request=GetMap&version=1.1.1&layers={layer}&styles=raster/seq-Greys-inv&format=image/png;mode=32bit&transparent=true&srs={}&bbox={}&width={}&height={}&colorscalerange={},{}",
-            self.srs, self.bbox, self.width, self.height, minmax.min, minmax.max
-        ))
+        .path_and_query(path)
         .build()
         .unwrap()
     }
@@ -197,10 +214,13 @@ pub async fn wms(
         .iter_mut()
         .map(|r| r.as_mut().unwrap().body());
 
-    let mut reference_images = join_all(reference_images).await
+    let mut reference_images = join_all(reference_images)
+        .await
         .iter()
         .map(|r| {
-            image::load_from_memory(r.as_ref().unwrap().as_ref()).unwrap().to_rgba8()
+            image::load_from_memory(r.as_ref().unwrap().as_ref())
+                .unwrap()
+                .to_rgba8()
         })
         .collect::<Vec<_>>();
 
@@ -217,7 +237,9 @@ pub async fn wms(
             let x = (i / 4) as u32 % params.width;
             let y = (i / 4) as u32 / params.width;
             let raw_value = reference_image.get_pixel(x, y).0[0];
-            let v: f32 = (raw_value as f32 / 255.0) * (ref_min_max.max as f32 - ref_min_max.min as f32) + ref_min_max.min as f32;
+            let v: f32 = (raw_value as f32 / 255.0)
+                * (ref_min_max.max as f32 - ref_min_max.min as f32)
+                + ref_min_max.min as f32;
             v.to_be_bytes()
         })
         .collect::<Vec<u8>>();
