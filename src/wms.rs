@@ -220,6 +220,8 @@ pub async fn wms(
 
     let ref_min_max = minmax_unpacked.pop().unwrap();
 
+    let step = (ref_min_max.max as f32 - ref_min_max.min as f32) / 249.0;
+    println!("{min} {step} {max}", min=ref_min_max.min, step=step, max=ref_min_max.max);
     let image_data = (0..params.width * params.height * 4)
         .into_par_iter()
         .enumerate()
@@ -235,8 +237,8 @@ pub async fn wms(
                 if raw_value == 0 {
                     [255; 4]
                 } else {
-                    let v: f32 = (raw_value as f32 / 255.0)
-                    * (ref_min_max.max as f32 - ref_min_max.min as f32)
+                    let v: f32 = (raw_value as f32 / 255.0) / (1.0 / 250.0)
+                    * step
                     + ref_min_max.min as f32;
                     v.to_le_bytes()
                 }
