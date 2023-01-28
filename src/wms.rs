@@ -8,8 +8,8 @@ use actix_web::{
 };
 use awc::Client;
 use futures::future::join_all;
-use image::{ImageOutputFormat, Rgba};
-use log::warn;
+use image::ImageOutputFormat;
+use log::{warn, debug};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
@@ -72,8 +72,8 @@ impl WmsParams {
         self.layers
             .split(",")
             .flat_map(|l| {
-                if l.ends_with("-group") {
-                    l.split("group")
+                if l.contains("-") {
+                    l.split("-")
                         .next()
                         .unwrap()
                         .split(":")
@@ -84,17 +84,6 @@ impl WmsParams {
                 }
             })
             .collect()
-    }
-
-    pub fn parse_colorscalerange(&self) -> (f64, f64) {
-        let range: Vec<f64> = self
-            .colorscalerange
-            .as_ref()
-            .unwrap_or(&"".to_string())
-            .split(",")
-            .map(|s| s.parse::<f64>().unwrap())
-            .collect();
-        (range[0], range[1])
     }
 
     pub fn get_metadata_url(&self, downstream: &str, layer: &str) -> Uri {
@@ -115,6 +104,7 @@ impl WmsParams {
             .unwrap_or("".to_string());
         let time = self
             .time
+            .as_ref()
             .map(|t| format!("&time={t}"))
             .unwrap_or("".to_string());
         let path = format!("/ncWMS2/wms/?service=WMS&request=GetMetadata&version=1.1.1&item=minmax&layername={layer}&layers={layer}&styles=&srs={srs}&bbox={bbox}&width={width}&height={height}{elevation}{time}", srs=self.srs, bbox=self.bbox, width=self.width, height=self.height);
@@ -134,17 +124,18 @@ impl WmsParams {
             .unwrap_or("".to_string());
         let time = self
             .time
+            .as_ref()
             .map(|t| format!("&time={t}"))
             .unwrap_or("".to_string());
         let path = format!("/ncWMS2/wms/?service=WMS&request=GetMap&version=1.1.1&layers={layer}&styles=raster/seq-Greys-inv&format=image/png;mode=32bit&transparent=true&srs={srs}&bbox={bbox}&width={width}&height={height}&colorscalerange={min},{max}&numcolorbands=250{elevation}{time}",
         srs=self.srs, bbox=self.bbox, width=self.width, height=self.height, min=-minmax.min, max=minmax.max);
 
         Uri::builder()
-        .scheme("https")
-        .authority(downstream.split("/").next().unwrap())
-        .path_and_query(path)
-        .build()
-        .unwrap()
+            .scheme("https")
+            .authority(downstream.split("/").next().unwrap())
+            .path_and_query(path)
+            .build()
+            .unwrap()
     }
 }
 
@@ -236,11 +227,20 @@ pub async fn wms(
         .flat_map(|(i, _)| {
             let x = (i / 4) as u32 % params.width;
             let y = (i / 4) as u32 / params.width;
-            let raw_value = reference_image.get_pixel(x, y).0[0];
-            let v: f32 = (raw_value as f32 / 255.0)
-                * (ref_min_max.max as f32 - ref_min_max.min as f32)
-                + ref_min_max.min as f32;
-            v.to_be_bytes()
+            let pixel = reference_image.get_pixel(x, y).0;
+            if pixel[3] == 0 {
+                [0; 4]
+            } else {
+                let raw_value = pixel[0];
+                if raw_value == 0 {
+                    [255; 4]
+                } else {
+                    let v: f32 = (raw_value as f32 / 255.0)
+                    * (ref_min_max.max as f32 - ref_min_max.min as f32)
+                    + ref_min_max.min as f32;
+                    v.to_le_bytes()
+                }
+            }
         })
         .collect::<Vec<u8>>();
 
