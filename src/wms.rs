@@ -9,13 +9,14 @@ use actix_web::{
 use awc::Client;
 use futures::future::join_all;
 use image::ImageOutputFormat;
-use log::{warn, debug};
+use log::{debug, warn};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::common::{proxy, AppState};
 
 // https://eds.ioos.us/wms/?service=WMS&request=GetMap&version=1.1.1&layers=GFS_WAVE_ATLANTIC/Significant_height_of_combined_wind_waves_and_swell_surface&styles=raster%2Fx-Occam&colorscalerange=0%2C10&units=m&width=256&height=256&format=image/png&transparent=true&time=2023-01-26T00:00:00.000Z&srs=EPSG:3857&bbox=-7827151.696402049,4383204.9499851465,-7514065.628545966,4696291.017841227
+// https://eds.ioos.us/wms/?service=WMS&request=GetMap&version=1.1.1&layers=GFS_WAVE_ATLANTIC/Significant_height_of_combined_wind_waves_and_swell_surface&styles=values/default&colorscalerange=0%2C10&units=m&width=256&height=256&format=image/png&transparent=true&time=2023-01-26T00:00:00.000Z&srs=EPSG:3857&bbox=-7827151.696402049,4383204.9499851465,-7514065.628545966,4696291.017841227
 
 #[derive(Deserialize, Serialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
@@ -127,8 +128,8 @@ impl WmsParams {
             .as_ref()
             .map(|t| format!("&time={t}"))
             .unwrap_or("".to_string());
-        let path = format!("/ncWMS2/wms/?service=WMS&request=GetMap&version=1.1.1&layers={layer}&styles=raster/seq-Greys-inv&format=image/png;mode=32bit&transparent=true&srs={srs}&bbox={bbox}&width={width}&height={height}&colorscalerange={min},{max}&numcolorbands=250{elevation}{time}",
-        srs=self.srs, bbox=self.bbox, width=self.width, height=self.height, min=-minmax.min, max=minmax.max);
+        let path = format!("/ncWMS2/wms/?service=WMS&request=GetMap&version=1.1.1&layers={layer}&styles=raster/seq-GreysRev&format=image/png;mode=32bit&transparent=true&srs={srs}&bbox={bbox}&width={width}&height={height}&colorscalerange={min},{max}&numcolorbands=250{elevation}{time}",
+        srs=self.srs, bbox=self.bbox, width=self.width, height=self.height, min=minmax.min, max=minmax.max);
 
         Uri::builder()
             .scheme("https")
@@ -156,6 +157,10 @@ pub async fn wms(
     let metadata_futures = layers.iter().flat_map(|l| {
         let metadata_url = params.get_metadata_url(&app_state.downstream, l);
         let minmax_url = params.get_minmax_url(&app_state.downstream, l);
+
+        println!("metadata_url: {metadata_url}");
+        println!("minmax_url: {minmax_url}");
+
         let metadata = client
             .get(metadata_url)
             .timeout(Duration::from_secs(60))
@@ -181,7 +186,7 @@ pub async fn wms(
         }
     }
 
-    let metadata_unpacked = join_all(metadata_unpacked)
+    let _metadata_unpacked = join_all(metadata_unpacked)
         .await
         .iter()
         .map(|m| m.as_ref().unwrap().clone())
@@ -221,30 +226,33 @@ pub async fn wms(
     let ref_min_max = minmax_unpacked.pop().unwrap();
 
     let step = (ref_min_max.max as f32 - ref_min_max.min as f32) / 249.0;
-    println!("{min} {step} {max}", min=ref_min_max.min, step=step, max=ref_min_max.max);
-    let image_data = (0..params.width * params.height * 4)
-        .into_par_iter()
-        .enumerate()
-        .step_by(4)
-        .flat_map(|(i, _)| {
-            let x = (i / 4) as u32 % params.width;
-            let y = (i / 4) as u32 / params.width;
-            let pixel = reference_image.get_pixel(x, y).0;
-            if pixel[3] == 0 {
-                [0; 4]
+    let range = ref_min_max.max as f32 - ref_min_max.min as f32;
+    println!(
+        "{min} {step} {max} {range}",
+        min = ref_min_max.min,
+        step = step,
+        max = ref_min_max.max
+    );
+
+    let image_data = reference_image
+    .pixels()
+    .into_iter()
+    .flat_map(|pixel| {
+        if pixel[3] == 0 {
+            [0; 4]
+        } else {
+            let raw_value = pixel[0];
+            if raw_value == 0 {
+                [255; 4]
             } else {
-                let raw_value = pixel[0];
-                if raw_value == 0 {
-                    [255; 4]
-                } else {
-                    let v: f32 = (raw_value as f32 / 255.0) / (1.0 / 250.0)
-                    * step
-                    + ref_min_max.min as f32;
-                    v.to_le_bytes()
-                }
+                let v: f32 = (raw_value as f32 / 255.0) * range + ref_min_max.min as f32;
+                let v: f32 =
+                (raw_value as f32 / 255.0) / (1.0 / 250.0) * step + ref_min_max.min as f32;
+                v.to_le_bytes()
             }
-        })
-        .collect::<Vec<u8>>();
+        }
+    })
+    .collect::<Vec<_>>();
 
     let im = image::RgbaImage::from_vec(params.width, params.height, image_data).unwrap();
 
@@ -257,4 +265,70 @@ pub async fn wms(
         .body(raw);
 
     Ok(response)
+}
+
+#[cfg(test)]
+mod tests {
+    use image::{ImageBuffer, Rgba};
+
+    use super::*;
+
+    fn pixels_to_float(im: &ImageBuffer<Rgba<u8>, Vec<u8>>) -> Vec<f32> {
+        (0..im.width() * im.height() * 4)
+            .into_par_iter()
+            .enumerate()
+            .step_by(4)
+            .map(|(i, _)| {
+                let x = (i / 4) as u32 % 256;
+                let y = (i / 4) as u32 / 256;
+                let pixel = im.get_pixel(x, y);
+                f32::from_le_bytes(pixel.0)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn render_values() {
+        let ref_image = image::open("tests/data/greys-rev.png").unwrap().to_rgba8();
+
+        let min_max = WmsMinMax {
+            min: 1.08,
+            max: 2.02,
+        };
+
+        let step = (min_max.max as f32 - min_max.min as f32) / 250.0;
+        let range = min_max.max as f32 - min_max.min as f32;
+        let image_data = ref_image
+            .pixels()
+            .into_iter()
+            .flat_map(|pixel| {
+                if pixel[3] == 0 {
+                    [0; 4]
+                } else {
+                    let raw_value = pixel[0];
+                    if raw_value == 0 {
+                        [255; 4]
+                    } else {
+                        let v: f32 = (raw_value as f32 / 255.0) * range + min_max.min as f32;
+                        // let v: f32 =
+                        // (raw_value as f32 / 255.0) / (1.0 / 250.0) * step + min_max.min as f32;
+                        v.to_le_bytes()
+                    }
+                }
+            })
+            .collect::<Vec<_>>();
+
+        let im = image::RgbaImage::from_vec(256, 256, image_data).unwrap();
+        let _ = im.save("tests/data/values-rs.png");
+
+        let rendered_vals = pixels_to_float(&im);
+
+        let truth_im = image::open("tests/data/values-new.png").unwrap().to_rgba8();
+        let truth_vals = pixels_to_float(&truth_im);
+
+        println!("{:?}", &rendered_vals[300..308]);
+        println!("{:?}", &truth_vals[300..308]);
+
+        // assert_eq!(rendered_vals, truth_vals);
+    }
 }
