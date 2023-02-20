@@ -221,38 +221,32 @@ pub async fn wms(
         .collect::<Vec<_>>();
 
     let reference_image = reference_images.pop().unwrap();
-    let _ = reference_image.save("test.png");
+    //let _ = reference_image.save("test.png");
 
     let ref_min_max = minmax_unpacked.pop().unwrap();
 
+    // This is done to match pyxms's behaviour, which uses matplotlibs colormapping and linspace to
+    // directly map values to color bins. This might not be more accurate, for that we may eventually go back
+    // to using straight linear scaling from min to max.
     let step = (ref_min_max.max as f32 - ref_min_max.min as f32) / 249.0;
-    let range = ref_min_max.max as f32 - ref_min_max.min as f32;
-    println!(
-        "{min} {step} {max} {range}",
-        min = ref_min_max.min,
-        step = step,
-        max = ref_min_max.max
-    );
 
     let image_data = reference_image
-    .pixels()
-    .into_iter()
-    .flat_map(|pixel| {
-        if pixel[3] == 0 {
-            [0; 4]
-        } else {
-            let raw_value = pixel[0];
-            if raw_value == 0 {
-                [255; 4]
+        .pixels()
+        .flat_map(|pixel| {
+            if pixel[3] == 0 {
+                [0; 4]
             } else {
-                let v: f32 = (raw_value as f32 / 255.0) * range + ref_min_max.min as f32;
-                let v: f32 =
-                (raw_value as f32 / 255.0) / (1.0 / 250.0) * step + ref_min_max.min as f32;
-                v.to_le_bytes()
+                let raw_value = pixel[0];
+                if raw_value == 0 {
+                    [255; 4]
+                } else {
+                    let step_i = ((raw_value as f32 / 255.0) / (1.0 / 250.0)).ceil();
+                    let v: f32 = step_i * step + ref_min_max.min as f32;
+                    v.to_le_bytes()
+                }
             }
-        }
-    })
-    .collect::<Vec<_>>();
+        })
+        .collect::<Vec<_>>();
 
     let im = image::RgbaImage::from_vec(params.width, params.height, image_data).unwrap();
 
@@ -288,7 +282,7 @@ mod tests {
     }
 
     #[test]
-    fn render_values() {
+    fn render_matching_pyxms_values() {
         let ref_image = image::open("tests/data/greys-rev.png").unwrap().to_rgba8();
 
         let min_max = WmsMinMax {
@@ -296,11 +290,9 @@ mod tests {
             max: 2.02,
         };
 
-        let step = (min_max.max as f32 - min_max.min as f32) / 250.0;
-        let range = min_max.max as f32 - min_max.min as f32;
+        let step = (min_max.max as f32 - min_max.min as f32) / 249.0;
         let image_data = ref_image
             .pixels()
-            .into_iter()
             .flat_map(|pixel| {
                 if pixel[3] == 0 {
                     [0; 4]
@@ -309,9 +301,8 @@ mod tests {
                     if raw_value == 0 {
                         [255; 4]
                     } else {
-                        let v: f32 = (raw_value as f32 / 255.0) * range + min_max.min as f32;
-                        // let v: f32 =
-                        // (raw_value as f32 / 255.0) / (1.0 / 250.0) * step + min_max.min as f32;
+                        let step_i = ((raw_value as f32 / 255.0) / (1.0 / 250.0)).ceil();
+                        let v: f32 = step_i * step + min_max.min as f32;
                         v.to_le_bytes()
                     }
                 }
@@ -326,9 +317,14 @@ mod tests {
         let truth_im = image::open("tests/data/values-new.png").unwrap().to_rgba8();
         let truth_vals = pixels_to_float(&truth_im);
 
-        println!("{:?}", &rendered_vals[300..308]);
-        println!("{:?}", &truth_vals[300..308]);
+        // println!("{:?}", &rendered_vals[100..108]);
+        // println!("{:?}", &truth_vals[100..108]);
 
-        // assert_eq!(rendered_vals, truth_vals);
+        for i in 0..rendered_vals.len() {
+            if (rendered_vals[i] - truth_vals[i]).abs() >= 0.01 {
+                println!("{} -- {}", rendered_vals[i], truth_vals[i]);
+                assert!((rendered_vals[i] - truth_vals[i]).abs() < 0.01);
+            }
+        }
     }
 }
