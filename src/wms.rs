@@ -9,8 +9,7 @@ use actix_web::{
 use awc::Client;
 use futures::future::join_all;
 use image::ImageOutputFormat;
-use log::{debug, warn};
-use rayon::prelude::*;
+use log::{warn};
 use serde::{Deserialize, Serialize};
 
 use crate::common::{proxy, AppState};
@@ -263,6 +262,7 @@ pub async fn wms(
 
 #[cfg(test)]
 mod tests {
+    use rayon::prelude::*;
     use image::{ImageBuffer, Rgba};
 
     use super::*;
