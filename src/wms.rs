@@ -39,17 +39,17 @@ pub struct WmsParams {
     #[serde(alias = "version", alias = "VERSION")]
     pub version: String,
     #[serde(alias = "layers", alias = "LAYERS")]
-    pub layers: String,
+    pub layers: Option<String>,
     #[serde(alias = "styles", alias = "STYLES")]
     pub styles: Option<String>,
     #[serde(alias = "bbox", alias = "BBOX")]
-    pub bbox: String,
+    pub bbox: Option<String>,
     #[serde(alias = "width", alias = "WIDTH")]
-    pub width: u32,
+    pub width: Option<u32>,
     #[serde(alias = "height", alias = "HEIGHT")]
-    pub height: u32,
+    pub height: Option<u32>,
     #[serde(alias = "srs", alias = "SRS")]
-    pub srs: String,
+    pub srs: Option<String>,
     #[serde(alias = "time", alias = "TIME")]
     pub time: Option<String>,
     #[serde(alias = "elevation", alias = "ELEVATION")]
@@ -70,6 +70,8 @@ impl WmsParams {
 
     pub fn parse_layers(&self) -> Vec<String> {
         self.layers
+            .clone()
+            .unwrap()
             .split(",")
             .flat_map(|l| {
                 if l.contains("-") {
@@ -88,10 +90,10 @@ impl WmsParams {
 
     pub fn get_metadata_url(&self, downstream: &str, layer: &str) -> Uri {
         Uri::builder()
-            .scheme("https")
+            .scheme("http")
             .authority(downstream.split("/").next().unwrap())
             .path_and_query(format!(
-                "/ncWMS2/wms/?service=WMS&request=GetMetadata&version=1.1.1&item=layerDetails&layername={layer}",
+                "/wms/?service=WMS&request=GetMetadata&version=1.1.1&item=layerDetails&layername={layer}",
             ))
             .build()
             .unwrap()
@@ -107,10 +109,10 @@ impl WmsParams {
             .as_ref()
             .map(|t| format!("&time={t}"))
             .unwrap_or("".to_string());
-        let path = format!("/ncWMS2/wms/?service=WMS&request=GetMetadata&version=1.1.1&item=minmax&layername={layer}&layers={layer}&styles=&srs={srs}&bbox={bbox}&width={width}&height={height}{elevation}{time}", srs=self.srs, bbox=self.bbox, width=self.width, height=self.height);
+        let path = format!("/wms/?service=WMS&request=GetMetadata&version=1.1.1&item=minmax&layername={layer}&layers={layer}&styles=&srs={srs}&bbox={bbox}&width={width}&height={height}{elevation}{time}", srs=self.srs.clone().unwrap(), bbox=self.bbox.clone().unwrap(), width=self.width.unwrap(), height=self.height.unwrap());
 
         Uri::builder()
-            .scheme("https")
+            .scheme("http")
             .authority(downstream.split("/").next().unwrap())
             .path_and_query(path)
             .build()
@@ -127,11 +129,11 @@ impl WmsParams {
             .as_ref()
             .map(|t| format!("&time={t}"))
             .unwrap_or("".to_string());
-        let path = format!("/ncWMS2/wms/?service=WMS&request=GetMap&version=1.1.1&layers={layer}&styles=raster/seq-GreysRev&format=image/png;mode=32bit&transparent=true&srs={srs}&bbox={bbox}&width={width}&height={height}&colorscalerange={min},{max}&numcolorbands=250{elevation}{time}",
-        srs=self.srs, bbox=self.bbox, width=self.width, height=self.height, min=minmax.min, max=minmax.max);
+        let path = format!("/wms/?service=WMS&request=GetMap&version=1.1.1&layers={layer}&styles=raster/seq-GreysRev&format=image/png;mode=32bit&transparent=true&srs={srs}&bbox={bbox}&width={width}&height={height}&colorscalerange={min},{max}&numcolorbands=250{elevation}{time}",
+        srs=self.srs.clone().unwrap(), bbox=self.bbox.clone().unwrap(), width=self.width.unwrap(), height=self.height.unwrap(), min=minmax.min, max=minmax.max);
 
         Uri::builder()
-            .scheme("https")
+            .scheme("http")
             .authority(downstream.split("/").next().unwrap())
             .path_and_query(path)
             .build()
@@ -173,23 +175,27 @@ pub async fn wms(
 
     let mut metadata = join_all(metadata_futures).await;
 
-    let mut metadata_unpacked = vec![];
+    // let mut metadata_unpacked = vec![];
     let mut minmax_unpacked = vec![];
     for (i, m) in metadata.iter_mut().enumerate() {
         if i % 2 == 0 {
-            let meta = m.as_mut().unwrap().json::<WmsMetadata>();
-            metadata_unpacked.push(meta);
+            // let meta = m.as_mut().unwrap().json::<WmsMetadata>();
+            // metadata_unpacked.push(meta);
         } else {
-            let minmax = m.as_mut().unwrap().json::<WmsMinMax>();
+            let mm = m.as_mut().unwrap();
+            println!("{:?}", mm.headers());
+            println!("{:?}", mm.status());
+            println!("{:?}", mm.body().await.unwrap());
+            let minmax = mm.json::<WmsMinMax>();
             minmax_unpacked.push(minmax);
         }
     }
 
-    let _metadata_unpacked = join_all(metadata_unpacked)
-        .await
-        .iter()
-        .map(|m| m.as_ref().unwrap().clone())
-        .collect::<Vec<_>>();
+    // let _metadata_unpacked = join_all(metadata_unpacked)
+    //     .await
+    //     .iter()
+    //     .map(|m| m.as_ref().unwrap().clone())
+    //     .collect::<Vec<_>>();
 
     let mut minmax_unpacked = join_all(minmax_unpacked)
         .await
@@ -247,7 +253,7 @@ pub async fn wms(
         })
         .collect::<Vec<_>>();
 
-    let im = image::RgbaImage::from_vec(params.width, params.height, image_data).unwrap();
+    let im = image::RgbaImage::from_vec(params.width.unwrap(), params.height.unwrap(), image_data).unwrap();
 
     let mut w = Cursor::new(Vec::new());
     im.write_to(&mut w, ImageOutputFormat::Png).unwrap();

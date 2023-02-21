@@ -23,5 +23,5 @@ docker build -t rewms:latest .
 Then run with docker 
 
 ```
-docker run -p 8080:8080 --env PORT=8080 --env DOWNSTREAM="eds.ioos.us" rewms:latest
+docker run -p 80:80 --add-host=downstream:eds.ioos.us rewms:latest
 ```

@@ -20,7 +20,7 @@ async fn status() -> impl Responder {
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     let bind_port: u16 = std::env::var("PORT")
-        .unwrap_or("8080".to_string())
+        .unwrap_or("9080".to_string())
         .parse()
         .unwrap();
 
