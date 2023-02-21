@@ -88,10 +88,10 @@ impl WmsParams {
             .collect()
     }
 
-    pub fn get_metadata_url(&self, downstream: &str, layer: &str) -> Uri {
+    pub fn get_metadata_url(&self, wms_scheme: &str, wms_host: &str, layer: &str) -> Uri {
         Uri::builder()
-            .scheme("http")
-            .authority(downstream.split("/").next().unwrap())
+            .scheme(wms_scheme)
+            .authority(wms_host)
             .path_and_query(format!(
                 "/wms/?service=WMS&request=GetMetadata&version=1.1.1&item=layerDetails&layername={layer}",
             ))
@@ -99,7 +99,7 @@ impl WmsParams {
             .unwrap()
     }
 
-    pub fn get_minmax_url(&self, downstream: &str, layer: &str) -> Uri {
+    pub fn get_minmax_url(&self, wms_scheme: &str, wms_host: &str, layer: &str) -> Uri {
         let elevation = self
             .elevation
             .map(|e| format!("&elevation={e}"))
@@ -112,14 +112,14 @@ impl WmsParams {
         let path = format!("/wms/?service=WMS&request=GetMetadata&version=1.1.1&item=minmax&layername={layer}&layers={layer}&styles=&srs={srs}&bbox={bbox}&width={width}&height={height}{elevation}{time}", srs=self.srs.clone().unwrap(), bbox=self.bbox.clone().unwrap(), width=self.width.unwrap(), height=self.height.unwrap());
 
         Uri::builder()
-            .scheme("http")
-            .authority(downstream.split("/").next().unwrap())
+            .scheme(wms_scheme)
+            .authority(wms_host)
             .path_and_query(path)
             .build()
             .unwrap()
     }
 
-    pub fn get_reference_map_url(&self, downstream: &str, layer: &str, minmax: &WmsMinMax) -> Uri {
+    pub fn get_reference_map_url(&self, wms_scheme: &str, wms_host: &str, layer: &str, minmax: &WmsMinMax) -> Uri {
         let elevation = self
             .elevation
             .map(|e| format!("&elevation={e}"))
@@ -133,8 +133,8 @@ impl WmsParams {
         srs=self.srs.clone().unwrap(), bbox=self.bbox.clone().unwrap(), width=self.width.unwrap(), height=self.height.unwrap(), min=minmax.min, max=minmax.max);
 
         Uri::builder()
-            .scheme("http")
-            .authority(downstream.split("/").next().unwrap())
+            .scheme(wms_scheme)
+            .authority(wms_host)
             .path_and_query(path)
             .build()
             .unwrap()
@@ -150,14 +150,14 @@ pub async fn wms(
 ) -> actix_web::Result<HttpResponse> {
     // For now we are only hijacking requests if the user is asking for a values or particles style
     if params.passthrough_request() {
-        let downstream_request = format!("{}/?{}", app_state.downstream, req.query_string());
+        let downstream_request = format!("{}://{}/?{}", app_state.wms_scheme, app_state.wms_host, req.query_string());
         return proxy(client.as_ref(), downstream_request).await;
     }
 
     let layers = params.parse_layers();
     let metadata_futures = layers.iter().flat_map(|l| {
-        let metadata_url = params.get_metadata_url(&app_state.downstream, l);
-        let minmax_url = params.get_minmax_url(&app_state.downstream, l);
+        let metadata_url = params.get_metadata_url(&app_state.wms_scheme, &app_state.wms_host, l);
+        let minmax_url = params.get_minmax_url(&app_state.wms_scheme, &app_state.wms_host, l);
 
         println!("metadata_url: {metadata_url}");
         println!("minmax_url: {minmax_url}");
@@ -205,7 +205,7 @@ pub async fn wms(
 
     let reference_url_futures = layers.iter().enumerate().map(|(i, l)| {
         let minmax = &minmax_unpacked[i];
-        let url = params.get_reference_map_url(&app_state.downstream, l, minmax);
+        let url = params.get_reference_map_url(&app_state.wms_scheme, &app_state.wms_host, l, minmax);
         warn!("{}", url.to_string());
         client.get(url).timeout(Duration::from_secs(60)).send()
     });

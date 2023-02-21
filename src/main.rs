@@ -28,6 +28,10 @@ async fn main() -> std::io::Result<()> {
         "You must specify a downstream WMS server URL with the DOWNSTREAM environment variable.",
     );
 
+    let downstream_parts = downstream.split("://").collect::<Vec<&str>>();
+    let downstream_scheme = downstream_parts[0].to_string();
+    let downstream_host = downstream_parts[1].to_string();
+
     env_logger::init_from_env(env_logger::Env::new().default_filter_or("info"));
 
     log::info!("starting rewms server at http://localhost:{bind_port}");
@@ -35,7 +39,8 @@ async fn main() -> std::io::Result<()> {
     HttpServer::new(move || {
         App::new()
             .app_data(Data::new(AppState {
-                downstream: downstream.clone(),
+                wms_scheme: downstream_scheme.clone(),
+                wms_host: downstream_host.clone(),
             }))
             .app_data(Data::new(Client::default()))
             .wrap(Logger::default())
