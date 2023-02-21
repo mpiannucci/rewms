@@ -175,27 +175,27 @@ pub async fn wms(
 
     let mut metadata = join_all(metadata_futures).await;
 
-    // let mut metadata_unpacked = vec![];
+    let mut metadata_unpacked = vec![];
     let mut minmax_unpacked = vec![];
     for (i, m) in metadata.iter_mut().enumerate() {
         if i % 2 == 0 {
-            // let meta = m.as_mut().unwrap().json::<WmsMetadata>();
-            // metadata_unpacked.push(meta);
+            let meta = m.as_mut().unwrap().json::<WmsMetadata>();
+            metadata_unpacked.push(meta);
         } else {
             let mm = m.as_mut().unwrap();
-            println!("{:?}", mm.headers());
-            println!("{:?}", mm.status());
-            println!("{:?}", mm.body().await.unwrap());
+            // println!("{:?}", mm.headers());
+            // println!("{:?}", mm.status());
+            // println!("{:?}", mm.body().await.unwrap());
             let minmax = mm.json::<WmsMinMax>();
             minmax_unpacked.push(minmax);
         }
     }
 
-    // let _metadata_unpacked = join_all(metadata_unpacked)
-    //     .await
-    //     .iter()
-    //     .map(|m| m.as_ref().unwrap().clone())
-    //     .collect::<Vec<_>>();
+    let _metadata_unpacked = join_all(metadata_unpacked)
+        .await
+        .iter()
+        .map(|m| m.as_ref().unwrap().clone())
+        .collect::<Vec<_>>();
 
     let mut minmax_unpacked = join_all(minmax_unpacked)
         .await
