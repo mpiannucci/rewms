@@ -14,5 +14,5 @@ else
     fi
 
     # rewms application
-    /usr/local/cargo/bin/rewms
+    /usr/local/cargo/bin/rewms --port=9080 --wms-root="http://localhost:8080"
 fi

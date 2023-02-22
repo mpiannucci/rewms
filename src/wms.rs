@@ -88,18 +88,18 @@ impl WmsParams {
             .collect()
     }
 
-    pub fn get_metadata_url(&self, wms_scheme: &str, wms_host: &str, layer: &str) -> Uri {
+    pub fn get_metadata_url(&self, wms_scheme: &str, wms_host: &str, wms_path: &str, layer: &str) -> Uri {
         Uri::builder()
             .scheme(wms_scheme)
             .authority(wms_host)
             .path_and_query(format!(
-                "/wms/?service=WMS&request=GetMetadata&version=1.1.1&item=layerDetails&layername={layer}",
+                "{wms_path}/wms/?service=WMS&request=GetMetadata&version=1.1.1&item=layerDetails&layername={layer}",
             ))
             .build()
             .unwrap()
     }
 
-    pub fn get_minmax_url(&self, wms_scheme: &str, wms_host: &str, layer: &str) -> Uri {
+    pub fn get_minmax_url(&self, wms_scheme: &str, wms_host: &str, wms_path: &str, layer: &str) -> Uri {
         let elevation = self
             .elevation
             .map(|e| format!("&elevation={e}"))
@@ -109,7 +109,7 @@ impl WmsParams {
             .as_ref()
             .map(|t| format!("&time={t}"))
             .unwrap_or("".to_string());
-        let path = format!("/wms/?service=WMS&request=GetMetadata&version=1.1.1&item=minmax&layername={layer}&layers={layer}&styles=&srs={srs}&bbox={bbox}&width={width}&height={height}{elevation}{time}", srs=self.srs.clone().unwrap(), bbox=self.bbox.clone().unwrap(), width=self.width.unwrap(), height=self.height.unwrap());
+        let path = format!("{wms_path}/wms/?service=WMS&request=GetMetadata&version=1.1.1&item=minmax&layername={layer}&layers={layer}&styles=&srs={srs}&bbox={bbox}&width={width}&height={height}{elevation}{time}", srs=self.srs.clone().unwrap(), bbox=self.bbox.clone().unwrap(), width=self.width.unwrap(), height=self.height.unwrap());
 
         Uri::builder()
             .scheme(wms_scheme)
@@ -119,7 +119,7 @@ impl WmsParams {
             .unwrap()
     }
 
-    pub fn get_reference_map_url(&self, wms_scheme: &str, wms_host: &str, layer: &str, minmax: &WmsMinMax) -> Uri {
+    pub fn get_reference_map_url(&self, wms_scheme: &str, wms_host: &str, wms_path: &str, layer: &str, minmax: &WmsMinMax) -> Uri {
         let elevation = self
             .elevation
             .map(|e| format!("&elevation={e}"))
@@ -129,7 +129,7 @@ impl WmsParams {
             .as_ref()
             .map(|t| format!("&time={t}"))
             .unwrap_or("".to_string());
-        let path = format!("/wms/?service=WMS&request=GetMap&version=1.1.1&layers={layer}&styles=raster/seq-GreysRev&format=image/png;mode=32bit&transparent=true&srs={srs}&bbox={bbox}&width={width}&height={height}&colorscalerange={min},{max}&numcolorbands=250{elevation}{time}",
+        let path = format!("{wms_path}/wms/?service=WMS&request=GetMap&version=1.1.1&layers={layer}&styles=raster/seq-GreysRev&format=image/png;mode=32bit&transparent=true&srs={srs}&bbox={bbox}&width={width}&height={height}&colorscalerange={min},{max}&numcolorbands=250{elevation}{time}",
         srs=self.srs.clone().unwrap(), bbox=self.bbox.clone().unwrap(), width=self.width.unwrap(), height=self.height.unwrap(), min=minmax.min, max=minmax.max);
 
         Uri::builder()
@@ -156,8 +156,8 @@ pub async fn wms(
 
     let layers = params.parse_layers();
     let metadata_futures = layers.iter().flat_map(|l| {
-        let metadata_url = params.get_metadata_url(&app_state.wms_scheme, &app_state.wms_host, l);
-        let minmax_url = params.get_minmax_url(&app_state.wms_scheme, &app_state.wms_host, l);
+        let metadata_url = params.get_metadata_url(&app_state.wms_scheme, &app_state.wms_host, &app_state.wms_path, l);
+        let minmax_url = params.get_minmax_url(&app_state.wms_scheme, &app_state.wms_host, &app_state.wms_path, l);
 
         println!("metadata_url: {metadata_url}");
         println!("minmax_url: {minmax_url}");
@@ -205,7 +205,7 @@ pub async fn wms(
 
     let reference_url_futures = layers.iter().enumerate().map(|(i, l)| {
         let minmax = &minmax_unpacked[i];
-        let url = params.get_reference_map_url(&app_state.wms_scheme, &app_state.wms_host, l, minmax);
+        let url = params.get_reference_map_url(&app_state.wms_scheme, &app_state.wms_host, &app_state.wms_path, l, minmax);
         warn!("{}", url.to_string());
         client.get(url).timeout(Duration::from_secs(60)).send()
     });

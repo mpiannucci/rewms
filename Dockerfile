@@ -15,6 +15,4 @@ COPY nginx /
 
 COPY ./scripts/run.sh /usr/local/bin
 
-ENV DOWNSTREAM="http://localhost:8080"
-
 CMD ["/bin/bash", "/usr/local/bin/run.sh"]
