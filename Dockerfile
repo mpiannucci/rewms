@@ -1,7 +1,5 @@
-FROM rust:1.67-buster
-
-RUN apt-get update && apt-get install -y \
-    nginx
+FROM rust:1.67 as build
+ENV PKG_CONFIG_ALLOW_CROSS=1
 
 WORKDIR /usr/src/rewms
 
@@ -11,8 +9,8 @@ COPY src src/
 
 RUN cargo install --path .
 
-COPY nginx /
+FROM gcr.io/distroless/cc-debian11
 
-COPY ./scripts/run.sh /usr/local/bin
+COPY --from=build /usr/local/cargo/bin/rewms /usr/local/bin/rewms
 
-CMD ["/bin/bash", "/usr/local/bin/run.sh"]
+ENTRYPOINT ["rewms"]

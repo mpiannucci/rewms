@@ -183,9 +183,6 @@ pub async fn wms(
             metadata_unpacked.push(meta);
         } else {
             let mm = m.as_mut().unwrap();
-            // println!("{:?}", mm.headers());
-            // println!("{:?}", mm.status());
-            // println!("{:?}", mm.body().await.unwrap());
             let minmax = mm.json::<WmsMinMax>();
             minmax_unpacked.push(minmax);
         }
