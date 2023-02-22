@@ -150,7 +150,7 @@ pub async fn wms(
 ) -> actix_web::Result<HttpResponse> {
     // For now we are only hijacking requests if the user is asking for a values or particles style
     if params.passthrough_request() {
-        let downstream_request = format!("{}://{}/?{}", app_state.wms_scheme, app_state.wms_host, req.query_string());
+        let downstream_request = format!("{}://{}{}/wms/?{}", app_state.wms_scheme, app_state.wms_host, app_state.wms_path, req.query_string());
         return proxy(client.as_ref(), downstream_request).await;
     }
 
