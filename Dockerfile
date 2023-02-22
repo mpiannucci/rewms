@@ -1,4 +1,7 @@
-FROM rust:1.67
+FROM rust:1.67-buster
+
+RUN apt-get update && apt-get install -y \
+    nginx
 
 WORKDIR /usr/src/rewms
 
@@ -8,4 +11,8 @@ COPY src src/
 
 RUN cargo install --path .
 
-CMD ["rewms"]
+COPY nginx /
+
+COPY ./scripts/run.sh /usr/local/bin
+
+CMD ["/bin/bash", "/usr/local/bin/run.sh"]

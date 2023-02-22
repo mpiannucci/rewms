@@ -9,8 +9,7 @@ use actix_web::{
 use awc::Client;
 use futures::future::join_all;
 use image::ImageOutputFormat;
-use log::{debug, warn};
-use rayon::prelude::*;
+use log::{warn};
 use serde::{Deserialize, Serialize};
 
 use crate::common::{proxy, AppState};
@@ -40,17 +39,17 @@ pub struct WmsParams {
     #[serde(alias = "version", alias = "VERSION")]
     pub version: String,
     #[serde(alias = "layers", alias = "LAYERS")]
-    pub layers: String,
+    pub layers: Option<String>,
     #[serde(alias = "styles", alias = "STYLES")]
     pub styles: Option<String>,
     #[serde(alias = "bbox", alias = "BBOX")]
-    pub bbox: String,
+    pub bbox: Option<String>,
     #[serde(alias = "width", alias = "WIDTH")]
-    pub width: u32,
+    pub width: Option<u32>,
     #[serde(alias = "height", alias = "HEIGHT")]
-    pub height: u32,
+    pub height: Option<u32>,
     #[serde(alias = "srs", alias = "SRS")]
-    pub srs: String,
+    pub srs: Option<String>,
     #[serde(alias = "time", alias = "TIME")]
     pub time: Option<String>,
     #[serde(alias = "elevation", alias = "ELEVATION")]
@@ -71,6 +70,8 @@ impl WmsParams {
 
     pub fn parse_layers(&self) -> Vec<String> {
         self.layers
+            .clone()
+            .unwrap()
             .split(",")
             .flat_map(|l| {
                 if l.contains("-") {
@@ -87,18 +88,18 @@ impl WmsParams {
             .collect()
     }
 
-    pub fn get_metadata_url(&self, downstream: &str, layer: &str) -> Uri {
+    pub fn get_metadata_url(&self, wms_scheme: &str, wms_host: &str, wms_path: &str, layer: &str) -> Uri {
         Uri::builder()
-            .scheme("https")
-            .authority(downstream.split("/").next().unwrap())
+            .scheme(wms_scheme)
+            .authority(wms_host)
             .path_and_query(format!(
-                "/ncWMS2/wms/?service=WMS&request=GetMetadata&version=1.1.1&item=layerDetails&layername={layer}",
+                "{wms_path}/wms/?service=WMS&request=GetMetadata&version=1.1.1&item=layerDetails&layername={layer}",
             ))
             .build()
             .unwrap()
     }
 
-    pub fn get_minmax_url(&self, downstream: &str, layer: &str) -> Uri {
+    pub fn get_minmax_url(&self, wms_scheme: &str, wms_host: &str, wms_path: &str, layer: &str) -> Uri {
         let elevation = self
             .elevation
             .map(|e| format!("&elevation={e}"))
@@ -108,17 +109,17 @@ impl WmsParams {
             .as_ref()
             .map(|t| format!("&time={t}"))
             .unwrap_or("".to_string());
-        let path = format!("/ncWMS2/wms/?service=WMS&request=GetMetadata&version=1.1.1&item=minmax&layername={layer}&layers={layer}&styles=&srs={srs}&bbox={bbox}&width={width}&height={height}{elevation}{time}", srs=self.srs, bbox=self.bbox, width=self.width, height=self.height);
+        let path = format!("{wms_path}/wms/?service=WMS&request=GetMetadata&version=1.1.1&item=minmax&layername={layer}&layers={layer}&styles=&srs={srs}&bbox={bbox}&width={width}&height={height}{elevation}{time}", srs=self.srs.clone().unwrap(), bbox=self.bbox.clone().unwrap(), width=self.width.unwrap(), height=self.height.unwrap());
 
         Uri::builder()
-            .scheme("https")
-            .authority(downstream.split("/").next().unwrap())
+            .scheme(wms_scheme)
+            .authority(wms_host)
             .path_and_query(path)
             .build()
             .unwrap()
     }
 
-    pub fn get_reference_map_url(&self, downstream: &str, layer: &str, minmax: &WmsMinMax) -> Uri {
+    pub fn get_reference_map_url(&self, wms_scheme: &str, wms_host: &str, wms_path: &str, layer: &str, minmax: &WmsMinMax) -> Uri {
         let elevation = self
             .elevation
             .map(|e| format!("&elevation={e}"))
@@ -128,12 +129,12 @@ impl WmsParams {
             .as_ref()
             .map(|t| format!("&time={t}"))
             .unwrap_or("".to_string());
-        let path = format!("/ncWMS2/wms/?service=WMS&request=GetMap&version=1.1.1&layers={layer}&styles=raster/seq-GreysRev&format=image/png;mode=32bit&transparent=true&srs={srs}&bbox={bbox}&width={width}&height={height}&colorscalerange={min},{max}&numcolorbands=250{elevation}{time}",
-        srs=self.srs, bbox=self.bbox, width=self.width, height=self.height, min=minmax.min, max=minmax.max);
+        let path = format!("{wms_path}/wms/?service=WMS&request=GetMap&version=1.1.1&layers={layer}&styles=raster/seq-GreysRev&format=image/png;mode=32bit&transparent=true&srs={srs}&bbox={bbox}&width={width}&height={height}&colorscalerange={min},{max}&numcolorbands=250{elevation}{time}",
+        srs=self.srs.clone().unwrap(), bbox=self.bbox.clone().unwrap(), width=self.width.unwrap(), height=self.height.unwrap(), min=minmax.min, max=minmax.max);
 
         Uri::builder()
-            .scheme("https")
-            .authority(downstream.split("/").next().unwrap())
+            .scheme(wms_scheme)
+            .authority(wms_host)
             .path_and_query(path)
             .build()
             .unwrap()
@@ -149,14 +150,14 @@ pub async fn wms(
 ) -> actix_web::Result<HttpResponse> {
     // For now we are only hijacking requests if the user is asking for a values or particles style
     if params.passthrough_request() {
-        let downstream_request = format!("{}/?{}", app_state.downstream, req.query_string());
+        let downstream_request = format!("{}://{}/?{}", app_state.wms_scheme, app_state.wms_host, req.query_string());
         return proxy(client.as_ref(), downstream_request).await;
     }
 
     let layers = params.parse_layers();
     let metadata_futures = layers.iter().flat_map(|l| {
-        let metadata_url = params.get_metadata_url(&app_state.downstream, l);
-        let minmax_url = params.get_minmax_url(&app_state.downstream, l);
+        let metadata_url = params.get_metadata_url(&app_state.wms_scheme, &app_state.wms_host, &app_state.wms_path, l);
+        let minmax_url = params.get_minmax_url(&app_state.wms_scheme, &app_state.wms_host, &app_state.wms_path, l);
 
         println!("metadata_url: {metadata_url}");
         println!("minmax_url: {minmax_url}");
@@ -181,7 +182,11 @@ pub async fn wms(
             let meta = m.as_mut().unwrap().json::<WmsMetadata>();
             metadata_unpacked.push(meta);
         } else {
-            let minmax = m.as_mut().unwrap().json::<WmsMinMax>();
+            let mm = m.as_mut().unwrap();
+            // println!("{:?}", mm.headers());
+            // println!("{:?}", mm.status());
+            // println!("{:?}", mm.body().await.unwrap());
+            let minmax = mm.json::<WmsMinMax>();
             minmax_unpacked.push(minmax);
         }
     }
@@ -200,7 +205,7 @@ pub async fn wms(
 
     let reference_url_futures = layers.iter().enumerate().map(|(i, l)| {
         let minmax = &minmax_unpacked[i];
-        let url = params.get_reference_map_url(&app_state.downstream, l, minmax);
+        let url = params.get_reference_map_url(&app_state.wms_scheme, &app_state.wms_host, &app_state.wms_path, l, minmax);
         warn!("{}", url.to_string());
         client.get(url).timeout(Duration::from_secs(60)).send()
     });
@@ -248,7 +253,7 @@ pub async fn wms(
         })
         .collect::<Vec<_>>();
 
-    let im = image::RgbaImage::from_vec(params.width, params.height, image_data).unwrap();
+    let im = image::RgbaImage::from_vec(params.width.unwrap(), params.height.unwrap(), image_data).unwrap();
 
     let mut w = Cursor::new(Vec::new());
     im.write_to(&mut w, ImageOutputFormat::Png).unwrap();
@@ -263,6 +268,7 @@ pub async fn wms(
 
 #[cfg(test)]
 mod tests {
+    use rayon::prelude::*;
     use image::{ImageBuffer, Rgba};
 
     use super::*;

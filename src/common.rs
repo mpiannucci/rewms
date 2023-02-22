@@ -4,7 +4,9 @@ use actix_web::{HttpResponse, error};
 use awc::Client;
 
 pub struct AppState {
-    pub downstream: String,
+    pub wms_scheme: String,
+    pub wms_host: String,
+    pub wms_path: String,
 }
 
 pub async fn proxy(client: &Client, url: String) -> actix_web::Result<HttpResponse> {
