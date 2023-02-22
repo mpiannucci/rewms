@@ -39,3 +39,5 @@ Then run with docker. With this image, a nginx cache reverse proxies the wms. In
 ```
 docker run -p 80:80 --add-host=downstream_wms:20.228.242.252 rewms:latest
 ```
+
+NOTE: For now, the downstream_wms host is expected to be https. If its, not, edit the nginx default.conf to reflect http instead
