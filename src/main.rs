@@ -18,10 +18,15 @@ use crate::state::AppState;
 #[command(author, version, about, long_about = None)]
 struct Args {
     #[arg(short, long)]
+    #[clap(default_value = "9080")]
     port: u16,
 
     #[arg(short, long)]
     wms_root: String,
+
+    #[arg(short, long)]
+    #[clap(default_value = "1")]
+    workers: usize,
 }
 
 #[get("/status")]
@@ -47,7 +52,7 @@ async fn main() -> std::io::Result<()> {
             .service(wms::wms)
     })
     .bind(("0.0.0.0", args.port))?
-    .workers(1)
+    .workers(args.workers)
     .run()
     .await
 }

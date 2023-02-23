@@ -49,3 +49,10 @@ docker run -p 80:80 --add-host=downstream_wms:20.228.242.252 rewms:latest
 ```
 
 NOTE: For now, the downstream_wms host is expected to be https. If its, not, edit the nginx default.conf to reflect http instead
+
+
+## CLI options
+
+**wms-root *(REQUIRED)*:** The path the the `ncWMS` root url to use as the downstream server. EX: `--wms-root=https://eds.ioos.us/ncWMS2`
+**port**: The port to bind the server to. EX: `--port=9080`. DEFAULT: `9080`
+**workers**: The number of worker threads to run. This is limited byt he number of available cores on the target machine. EX: `--workers=6`. DEFAULT: `1`
