@@ -9,7 +9,6 @@ use actix_web::{
 use awc::Client;
 use futures::future::join_all;
 use image::ImageOutputFormat;
-use log::{warn};
 use serde::{Deserialize, Serialize};
 
 use crate::common::{proxy, AppState};
@@ -88,18 +87,24 @@ impl WmsParams {
             .collect()
     }
 
-    pub fn get_metadata_url(&self, wms_scheme: &str, wms_host: &str, wms_path: &str, layer: &str) -> Uri {
-        Uri::builder()
-            .scheme(wms_scheme)
-            .authority(wms_host)
-            .path_and_query(format!(
-                "{wms_path}/wms/?service=WMS&request=GetMetadata&version=1.1.1&item=layerDetails&layername={layer}",
-            ))
-            .build()
-            .unwrap()
-    }
+    // pub fn get_metadata_url(&self, wms_scheme: &str, wms_host: &str, wms_path: &str, layer: &str) -> Uri {
+    //     Uri::builder()
+    //         .scheme(wms_scheme)
+    //         .authority(wms_host)
+    //         .path_and_query(format!(
+    //             "{wms_path}/wms/?service=WMS&request=GetMetadata&version=1.1.1&item=layerDetails&layername={layer}",
+    //         ))
+    //         .build()
+    //         .unwrap()
+    // }
 
-    pub fn get_minmax_url(&self, wms_scheme: &str, wms_host: &str, wms_path: &str, layer: &str) -> Uri {
+    pub fn get_minmax_url(
+        &self,
+        wms_scheme: &str,
+        wms_host: &str,
+        wms_path: &str,
+        layer: &str,
+    ) -> Uri {
         let elevation = self
             .elevation
             .map(|e| format!("&elevation={e}"))
@@ -119,7 +124,14 @@ impl WmsParams {
             .unwrap()
     }
 
-    pub fn get_reference_map_url(&self, wms_scheme: &str, wms_host: &str, wms_path: &str, layer: &str, minmax: &WmsMinMax) -> Uri {
+    pub fn get_reference_map_url(
+        &self,
+        wms_scheme: &str,
+        wms_host: &str,
+        wms_path: &str,
+        layer: &str,
+        minmax: &WmsMinMax,
+    ) -> Uri {
         let elevation = self
             .elevation
             .map(|e| format!("&elevation={e}"))
@@ -150,49 +162,60 @@ pub async fn wms(
 ) -> actix_web::Result<HttpResponse> {
     // For now we are only hijacking requests if the user is asking for a values or particles style
     if params.passthrough_request() {
-        let downstream_request = format!("{}://{}{}/wms/?{}", app_state.wms_scheme, app_state.wms_host, app_state.wms_path, req.query_string());
+        let downstream_request = format!(
+            "{}://{}{}/wms/?{}",
+            app_state.wms_scheme,
+            app_state.wms_host,
+            app_state.wms_path,
+            req.query_string()
+        );
         return proxy(client.as_ref(), downstream_request).await;
     }
 
     let layers = params.parse_layers();
-    let metadata_futures = layers.iter().flat_map(|l| {
-        let metadata_url = params.get_metadata_url(&app_state.wms_scheme, &app_state.wms_host, &app_state.wms_path, l);
-        let minmax_url = params.get_minmax_url(&app_state.wms_scheme, &app_state.wms_host, &app_state.wms_path, l);
+    let metadata_futures = layers.iter().map(|l| {
+        //let metadata_url = params.get_metadata_url(&app_state.wms_scheme, &app_state.wms_host, &app_state.wms_path, l);
+        let minmax_url = params.get_minmax_url(
+            &app_state.wms_scheme,
+            &app_state.wms_host,
+            &app_state.wms_path,
+            l,
+        );
 
-        println!("metadata_url: {metadata_url}");
-        println!("minmax_url: {minmax_url}");
-
-        let metadata = client
-            .get(metadata_url)
-            .timeout(Duration::from_secs(60))
-            .send();
-        let minmax = client
+        // let metadata = client
+        //     .get(metadata_url)
+        //     .timeout(Duration::from_secs(60))
+        //     .send();
+        client
             .get(minmax_url)
             .timeout(Duration::from_secs(60))
-            .send();
-        vec![metadata, minmax]
+            .send()
     });
 
     let mut metadata = join_all(metadata_futures).await;
 
-    let mut metadata_unpacked = vec![];
+    // let mut metadata_unpacked = vec![];
     let mut minmax_unpacked = vec![];
-    for (i, m) in metadata.iter_mut().enumerate() {
-        if i % 2 == 0 {
-            let meta = m.as_mut().unwrap().json::<WmsMetadata>();
-            metadata_unpacked.push(meta);
-        } else {
-            let mm = m.as_mut().unwrap();
-            let minmax = mm.json::<WmsMinMax>();
-            minmax_unpacked.push(minmax);
-        }
+    for m in metadata.iter_mut() {
+        // if i % 2 == 0 {
+        //     let meta = m.as_mut().unwrap().json::<WmsMetadata>();
+        //     metadata_unpacked.push(meta);
+        // } else {
+        //     let mm = m.as_mut().unwrap();
+        //     let minmax = mm.json::<WmsMinMax>();
+        //     minmax_unpacked.push(minmax);
+        // }
+
+        let mm = m.as_mut().unwrap();
+        let minmax = mm.json::<WmsMinMax>();
+        minmax_unpacked.push(minmax);
     }
 
-    let _metadata_unpacked = join_all(metadata_unpacked)
-        .await
-        .iter()
-        .map(|m| m.as_ref().unwrap().clone())
-        .collect::<Vec<_>>();
+    // let _metadata_unpacked = join_all(metadata_unpacked)
+    //     .await
+    //     .iter()
+    //     .map(|m| m.as_ref().unwrap().clone())
+    //     .collect::<Vec<_>>();
 
     let mut minmax_unpacked = join_all(minmax_unpacked)
         .await
@@ -202,8 +225,13 @@ pub async fn wms(
 
     let reference_url_futures = layers.iter().enumerate().map(|(i, l)| {
         let minmax = &minmax_unpacked[i];
-        let url = params.get_reference_map_url(&app_state.wms_scheme, &app_state.wms_host, &app_state.wms_path, l, minmax);
-        warn!("{}", url.to_string());
+        let url = params.get_reference_map_url(
+            &app_state.wms_scheme,
+            &app_state.wms_host,
+            &app_state.wms_path,
+            l,
+            minmax,
+        );
         client.get(url).timeout(Duration::from_secs(60)).send()
     });
 
@@ -222,7 +250,7 @@ pub async fn wms(
         })
         .collect::<Vec<_>>();
 
-    let reference_image = reference_images.pop().unwrap();
+    let mut image_data = reference_images.pop().unwrap();
     //let _ = reference_image.save("test.png");
 
     let ref_min_max = minmax_unpacked.pop().unwrap();
@@ -232,10 +260,10 @@ pub async fn wms(
     // to using straight linear scaling from min to max.
     let step = (ref_min_max.max as f32 - ref_min_max.min as f32) / 249.0;
 
-    let image_data = reference_image
-        .pixels()
-        .flat_map(|pixel| {
-            if pixel[3] == 0 {
+    image_data
+        .pixels_mut()
+        .for_each(|pixel| {
+            pixel.0 = if pixel[3] == 0 {
                 [0; 4]
             } else {
                 let raw_value = pixel[0];
@@ -246,14 +274,11 @@ pub async fn wms(
                     let v: f32 = step_i * step + ref_min_max.min as f32;
                     v.to_le_bytes()
                 }
-            }
-        })
-        .collect::<Vec<_>>();
-
-    let im = image::RgbaImage::from_vec(params.width.unwrap(), params.height.unwrap(), image_data).unwrap();
+            };
+        });
 
     let mut w = Cursor::new(Vec::new());
-    im.write_to(&mut w, ImageOutputFormat::Png).unwrap();
+    image_data.write_to(&mut w, ImageOutputFormat::Png).unwrap();
     let raw = w.into_inner();
 
     let response = HttpResponse::Ok()
@@ -265,8 +290,8 @@ pub async fn wms(
 
 #[cfg(test)]
 mod tests {
-    use rayon::prelude::*;
     use image::{ImageBuffer, Rgba};
+    use rayon::prelude::*;
 
     use super::*;
 
@@ -286,7 +311,7 @@ mod tests {
 
     #[test]
     fn render_matching_pyxms_values() {
-        let ref_image = image::open("tests/data/greys-rev.png").unwrap().to_rgba8();
+        let mut image = image::open("tests/data/greys-rev.png").unwrap().to_rgba8();
 
         let min_max = WmsMinMax {
             min: 1.08,
@@ -294,10 +319,10 @@ mod tests {
         };
 
         let step = (min_max.max as f32 - min_max.min as f32) / 249.0;
-        let image_data = ref_image
-            .pixels()
-            .flat_map(|pixel| {
-                if pixel[3] == 0 {
+        image
+            .pixels_mut()
+            .for_each(|pixel| {
+                pixel.0 = if pixel[3] == 0 {
                     [0; 4]
                 } else {
                     let raw_value = pixel[0];
@@ -308,14 +333,12 @@ mod tests {
                         let v: f32 = step_i * step + min_max.min as f32;
                         v.to_le_bytes()
                     }
-                }
-            })
-            .collect::<Vec<_>>();
+                };
+            });
 
-        let im = image::RgbaImage::from_vec(256, 256, image_data).unwrap();
-        let _ = im.save("tests/data/values-rs.png");
+        let _ = image.save("tests/data/values-rs.png");
 
-        let rendered_vals = pixels_to_float(&im);
+        let rendered_vals = pixels_to_float(&image);
 
         let truth_im = image::open("tests/data/values-new.png").unwrap().to_rgba8();
         let truth_vals = pixels_to_float(&truth_im);
