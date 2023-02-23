@@ -9,7 +9,7 @@ Restyle WMS raster images to optimize them for webgl rendering
 To run against the IOOS EDS WMS:
 
 ```
-cargo run -- --wms-root="https://eds.ioos.us/ncWMS2" --port=9080
+cargo run --release -- --wms-root="https://eds.ioos.us/ncWMS2" --port=9080
 ```
 
 You can install the app as a binary with 
