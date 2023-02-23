@@ -18,14 +18,6 @@ use crate::common::{proxy, AppState};
 
 #[derive(Deserialize, Serialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
-pub struct WmsMetadata {
-    pub scale_range: (f64, f64),
-    pub nearest_time_iso: String,
-    pub units: String,
-}
-
-#[derive(Deserialize, Serialize, Clone, Debug)]
-#[serde(rename_all = "camelCase")]
 pub struct WmsMinMax {
     pub min: f64,
     pub max: f64,
@@ -63,8 +55,7 @@ impl WmsParams {
             return true;
         };
 
-        self.request != "GetMap"
-            || (!styles.starts_with("values/") && !styles.starts_with("particles/"))
+        self.request != "GetMap" || !styles.starts_with("values/")
     }
 
     pub fn parse_layers(&self) -> Vec<String> {
@@ -86,17 +77,6 @@ impl WmsParams {
             })
             .collect()
     }
-
-    // pub fn get_metadata_url(&self, wms_scheme: &str, wms_host: &str, wms_path: &str, layer: &str) -> Uri {
-    //     Uri::builder()
-    //         .scheme(wms_scheme)
-    //         .authority(wms_host)
-    //         .path_and_query(format!(
-    //             "{wms_path}/wms/?service=WMS&request=GetMetadata&version=1.1.1&item=layerDetails&layername={layer}",
-    //         ))
-    //         .build()
-    //         .unwrap()
-    // }
 
     pub fn get_minmax_url(
         &self,
@@ -173,49 +153,27 @@ pub async fn wms(
     }
 
     let layers = params.parse_layers();
-    let metadata_futures = layers.iter().map(|l| {
-        //let metadata_url = params.get_metadata_url(&app_state.wms_scheme, &app_state.wms_host, &app_state.wms_path, l);
+    let minmax_futures = layers.iter().map(|l| {
         let minmax_url = params.get_minmax_url(
             &app_state.wms_scheme,
             &app_state.wms_host,
             &app_state.wms_path,
             l,
         );
-
-        // let metadata = client
-        //     .get(metadata_url)
-        //     .timeout(Duration::from_secs(60))
-        //     .send();
         client
             .get(minmax_url)
             .timeout(Duration::from_secs(60))
             .send()
     });
 
-    let mut metadata = join_all(metadata_futures).await;
+    let mut minmax = join_all(minmax_futures).await;
 
-    // let mut metadata_unpacked = vec![];
     let mut minmax_unpacked = vec![];
-    for m in metadata.iter_mut() {
-        // if i % 2 == 0 {
-        //     let meta = m.as_mut().unwrap().json::<WmsMetadata>();
-        //     metadata_unpacked.push(meta);
-        // } else {
-        //     let mm = m.as_mut().unwrap();
-        //     let minmax = mm.json::<WmsMinMax>();
-        //     minmax_unpacked.push(minmax);
-        // }
-
+    for m in minmax.iter_mut() {
         let mm = m.as_mut().unwrap();
         let minmax = mm.json::<WmsMinMax>();
         minmax_unpacked.push(minmax);
     }
-
-    // let _metadata_unpacked = join_all(metadata_unpacked)
-    //     .await
-    //     .iter()
-    //     .map(|m| m.as_ref().unwrap().clone())
-    //     .collect::<Vec<_>>();
 
     let mut minmax_unpacked = join_all(minmax_unpacked)
         .await
@@ -251,7 +209,6 @@ pub async fn wms(
         .collect::<Vec<_>>();
 
     let mut image_data = reference_images.pop().unwrap();
-    //let _ = reference_image.save("test.png");
 
     let ref_min_max = minmax_unpacked.pop().unwrap();
 
