@@ -1,18 +1,19 @@
 use std::{io::Cursor, time::Duration};
 
 use actix_web::{
+    error::ErrorInternalServerError,
     get,
     http::Uri,
     web::{self},
-    HttpRequest, HttpResponse, error::ErrorInternalServerError,
+    HttpRequest, HttpResponse,
 };
 use awc::Client;
 use image::ImageOutputFormat;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::state::AppState;
 use crate::proxy::proxy;
+use crate::state::AppState;
 
 // https://eds.ioos.us/wms/?service=WMS&request=GetMap&version=1.1.1&layers=GFS_WAVE_ATLANTIC/Significant_height_of_combined_wind_waves_and_swell_surface&styles=raster%2Fx-Occam&colorscalerange=0%2C10&units=m&width=256&height=256&format=image/png&transparent=true&time=2023-01-26T00:00:00.000Z&srs=EPSG:3857&bbox=-7827151.696402049,4383204.9499851465,-7514065.628545966,4696291.017841227
 // https://eds.ioos.us/wms/?service=WMS&request=GetMap&version=1.1.1&layers=GFS_WAVE_ATLANTIC/Significant_height_of_combined_wind_waves_and_swell_surface&styles=values/default&colorscalerange=0%2C10&units=m&width=256&height=256&format=image/png&transparent=true&time=2023-01-26T00:00:00.000Z&srs=EPSG:3857&bbox=-7827151.696402049,4383204.9499851465,-7514065.628545966,4696291.017841227
@@ -137,7 +138,7 @@ impl WmsParams {
 #[derive(Debug, Error)]
 enum WmsError {
     #[error("Invalid layer in WMS request")]
-    InvalidLayer
+    InvalidLayer,
 }
 
 impl actix_web::error::ResponseError for WmsError {
@@ -168,7 +169,11 @@ pub async fn wms(
     }
 
     // We are limited to only one layer with this style, so pull the first layer only
-    let layer = params.parse_layers().first().ok_or_else(|| WmsError::InvalidLayer)?.to_owned();
+    let layer = params
+        .parse_layers()
+        .first()
+        .ok_or_else(|| WmsError::InvalidLayer)?
+        .to_owned();
 
     let minmax_url = params.get_minmax_url(
         &app_state.wms_scheme,
@@ -179,7 +184,7 @@ pub async fn wms(
 
     // First fetch the minmax values for the layer, which we will use to scale the pixel data
     // from the reference images to actual values
-    let minmax =         client
+    let minmax = client
         .get(minmax_url)
         .timeout(Duration::from_secs(60))
         .send()
@@ -218,24 +223,22 @@ pub async fn wms(
     // to using straight linear scaling from min to max.
     let step = (minmax.max as f32 - minmax.min as f32) / 249.0;
 
-    // Avoiding allocation, iterate through the pixels and convert them to the scaled value 
+    // Avoiding allocation, iterate through the pixels and convert them to the scaled value
     // in place using the default transform. TODO: Make the transform configurable (for integration with other wms)
-    image_data
-        .pixels_mut()
-        .for_each(|pixel| {
-            pixel.0 = if pixel[3] == 0 {
-                [0; 4]
+    image_data.pixels_mut().for_each(|pixel| {
+        pixel.0 = if pixel[3] == 0 {
+            [0; 4]
+        } else {
+            let raw_value = pixel[0];
+            if raw_value == 0 {
+                [255; 4]
             } else {
-                let raw_value = pixel[0];
-                if raw_value == 0 {
-                    [255; 4]
-                } else {
-                    let step_i = ((raw_value as f32 / 255.0) / (1.0 / 250.0)).ceil();
-                    let v: f32 = step_i * step + minmax.min as f32;
-                    v.to_le_bytes()
-                }
-            };
-        });
+                let step_i = ((raw_value as f32 / 255.0) / (1.0 / 250.0)).ceil();
+                let v: f32 = step_i * step + minmax.min as f32;
+                v.to_le_bytes()
+            }
+        };
+    });
 
     let mut w = Cursor::new(Vec::new());
     image_data.write_to(&mut w, ImageOutputFormat::Png).unwrap();
@@ -279,22 +282,20 @@ mod tests {
         };
 
         let step = (min_max.max as f32 - min_max.min as f32) / 249.0;
-        image
-            .pixels_mut()
-            .for_each(|pixel| {
-                pixel.0 = if pixel[3] == 0 {
-                    [0; 4]
+        image.pixels_mut().for_each(|pixel| {
+            pixel.0 = if pixel[3] == 0 {
+                [0; 4]
+            } else {
+                let raw_value = pixel[0];
+                if raw_value == 0 {
+                    [255; 4]
                 } else {
-                    let raw_value = pixel[0];
-                    if raw_value == 0 {
-                        [255; 4]
-                    } else {
-                        let step_i = ((raw_value as f32 / 255.0) / (1.0 / 250.0)).floor();
-                        let v: f32 = step_i * step + min_max.min as f32;
-                        v.to_le_bytes()
-                    }
-                };
-            });
+                    let step_i = ((raw_value as f32 / 255.0) / (1.0 / 250.0)).floor();
+                    let v: f32 = step_i * step + min_max.min as f32;
+                    v.to_le_bytes()
+                }
+            };
+        });
 
         let _ = image.save("tests/data/values-rs.png");
 
