@@ -4,12 +4,12 @@ use actix_web::{
     get,
     http::Uri,
     web::{self},
-    HttpRequest, HttpResponse,
+    HttpRequest, HttpResponse, error::ErrorInternalServerError,
 };
 use awc::Client;
-use futures::future::join_all;
 use image::ImageOutputFormat;
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 
 use crate::state::AppState;
 use crate::proxy::proxy;
@@ -134,6 +134,20 @@ impl WmsParams {
     }
 }
 
+#[derive(Debug, Error)]
+enum WmsError {
+    #[error("Invalid layer in WMS request")]
+    InvalidLayer
+}
+
+impl actix_web::error::ResponseError for WmsError {
+    fn status_code(&self) -> actix_web::http::StatusCode {
+        match self {
+            WmsError::InvalidLayer => actix_web::http::StatusCode::BAD_REQUEST,
+        }
+    }
+}
+
 #[get("/wms/")]
 pub async fn wms(
     client: web::Data<Client>,
@@ -141,7 +155,7 @@ pub async fn wms(
     req: HttpRequest,
     params: web::Query<WmsParams>,
 ) -> actix_web::Result<HttpResponse> {
-    // For now we are only hijacking requests if the user is asking for a values or particles style
+    // For now we are only hijacking requests if the user is asking for a values style
     if params.passthrough_request() {
         let downstream_request = format!(
             "{}://{}{}/wms/?{}",
@@ -153,71 +167,59 @@ pub async fn wms(
         return proxy(client.as_ref(), downstream_request).await;
     }
 
-    let layers = params.parse_layers();
-    let minmax_futures = layers.iter().map(|l| {
-        let minmax_url = params.get_minmax_url(
-            &app_state.wms_scheme,
-            &app_state.wms_host,
-            &app_state.wms_path,
-            l,
-        );
-        client
-            .get(minmax_url)
-            .timeout(Duration::from_secs(60))
-            .send()
-    });
+    // We are limited to only one layer with this style, so pull the first layer only
+    let layer = params.parse_layers().first().ok_or_else(|| WmsError::InvalidLayer)?.to_owned();
 
-    let mut minmax = join_all(minmax_futures).await;
+    let minmax_url = params.get_minmax_url(
+        &app_state.wms_scheme,
+        &app_state.wms_host,
+        &app_state.wms_path,
+        &layer,
+    );
 
-    let mut minmax_unpacked = vec![];
-    for m in minmax.iter_mut() {
-        let mm = m.as_mut().unwrap();
-        let minmax = mm.json::<WmsMinMax>();
-        minmax_unpacked.push(minmax);
-    }
-
-    let mut minmax_unpacked = join_all(minmax_unpacked)
+    // First fetch the minmax values for the layer, which we will use to scale the pixel data
+    // from the reference images to actual values
+    let minmax =         client
+        .get(minmax_url)
+        .timeout(Duration::from_secs(60))
+        .send()
         .await
-        .iter()
-        .map(|m| m.as_ref().unwrap().clone())
-        .collect::<Vec<_>>();
-
-    let reference_url_futures = layers.iter().enumerate().map(|(i, l)| {
-        let minmax = &minmax_unpacked[i];
-        let url = params.get_reference_map_url(
-            &app_state.wms_scheme,
-            &app_state.wms_host,
-            &app_state.wms_path,
-            l,
-            minmax,
-        );
-        client.get(url).timeout(Duration::from_secs(60)).send()
-    });
-
-    let mut raw_reference_images = join_all(reference_url_futures).await;
-    let reference_images = raw_reference_images
-        .iter_mut()
-        .map(|r| r.as_mut().unwrap().body());
-
-    let mut reference_images = join_all(reference_images)
+        .map_err(ErrorInternalServerError)?
+        .json::<WmsMinMax>()
         .await
-        .iter()
-        .map(|r| {
-            image::load_from_memory(r.as_ref().unwrap().as_ref())
-                .unwrap()
-                .to_rgba8()
-        })
-        .collect::<Vec<_>>();
+        .map_err(ErrorInternalServerError)?;
 
-    let mut image_data = reference_images.pop().unwrap();
+    let reference_url = params.get_reference_map_url(
+        &app_state.wms_scheme,
+        &app_state.wms_host,
+        &app_state.wms_path,
+        &layer,
+        &minmax,
+    );
 
-    let ref_min_max = minmax_unpacked.pop().unwrap();
+    // Fetch the image from the downstream wms, and then extract the bytes from the response
+    let raw_image_data = client
+        .get(reference_url)
+        .timeout(Duration::from_secs(60))
+        .send()
+        .await
+        .map_err(ErrorInternalServerError)?
+        .body()
+        .await
+        .map_err(ErrorInternalServerError)?;
+
+    // Build the image representation from the raw bytes, reference images are always 32 bit pngs
+    let mut image_data = image::load_from_memory(&raw_image_data)
+        .map_err(ErrorInternalServerError)?
+        .to_rgba8();
 
     // This is done to match pyxms's behaviour, which uses matplotlibs colormapping and linspace to
     // directly map values to color bins. This might not be more accurate, for that we may eventually go back
     // to using straight linear scaling from min to max.
-    let step = (ref_min_max.max as f32 - ref_min_max.min as f32) / 249.0;
+    let step = (minmax.max as f32 - minmax.min as f32) / 249.0;
 
+    // Avoiding allocation, iterate through the pixels and convert them to the scaled value 
+    // in place using the default transform. TODO: Make the transform configurable (for integration with other wms)
     image_data
         .pixels_mut()
         .for_each(|pixel| {
@@ -229,7 +231,7 @@ pub async fn wms(
                     [255; 4]
                 } else {
                     let step_i = ((raw_value as f32 / 255.0) / (1.0 / 250.0)).ceil();
-                    let v: f32 = step_i * step + ref_min_max.min as f32;
+                    let v: f32 = step_i * step + minmax.min as f32;
                     v.to_le_bytes()
                 }
             };
