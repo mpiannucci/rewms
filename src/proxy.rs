@@ -1,13 +1,8 @@
 use std::time::Duration;
 
-use actix_web::{HttpResponse, error};
+use actix_web::{error, HttpResponse};
 use awc::Client;
 
-pub struct AppState {
-    pub wms_scheme: String,
-    pub wms_host: String,
-    pub wms_path: String,
-}
 
 pub async fn proxy(client: &Client, url: String) -> actix_web::Result<HttpResponse> {
     client

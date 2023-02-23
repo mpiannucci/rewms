@@ -1,4 +1,5 @@
-mod common;
+mod proxy;
+mod state;
 mod wms;
 
 use actix_cors::Cors;
@@ -11,7 +12,7 @@ use actix_web::{
 use awc::Client;
 use clap::{Parser, command, arg};
 
-use crate::common::AppState;
+use crate::state::AppState;
 
 #[derive(Debug, Parser)]
 #[command(author, version, about, long_about = None)]
@@ -32,27 +33,13 @@ async fn status() -> impl Responder {
 async fn main() -> std::io::Result<()> {
     let args: Args = Args::parse();
 
-    let wms_parts = args.wms_root.split("://").collect::<Vec<&str>>();
-    let wms_scheme = wms_parts[0].to_string();
-    let wms_path_parts = wms_parts[1].split("/").collect::<Vec<&str>>();
-    let wms_host = wms_path_parts[0].to_string();
-    let wms_path = if wms_path_parts.len() > 1 {
-        format!("/{path}", path=wms_path_parts[1..].join("/"))
-    } else {
-        "".to_string()
-    };
-
     env_logger::init_from_env(env_logger::Env::new().default_filter_or("info"));
 
     log::info!("starting rewms server at http://localhost:{port}", port=args.port);
 
     HttpServer::new(move || {
         App::new()
-            .app_data(Data::new(AppState {
-                wms_scheme: wms_scheme.clone(),
-                wms_host: wms_host.clone(),
-                wms_path: wms_path.clone(),
-            }))
+            .app_data(Data::new(AppState::new(&args.wms_root)))
             .app_data(Data::new(Client::default()))
             .wrap(Logger::default())
             .wrap(Cors::permissive())
