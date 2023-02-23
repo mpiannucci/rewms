@@ -12,6 +12,14 @@ To run against the IOOS EDS WMS:
 cargo run --wms-root="https://eds.ioos.us/ncWMS2" --port=9080
 ```
 
+You can install the app as a binary with 
+
+```
+cargo install --path .
+```
+
+This will install the statically linked binary to your cargo bin directory, where it can be run or copied elsewhere on your system for use.
+
 ### With Docker
 
 First build the docker image
