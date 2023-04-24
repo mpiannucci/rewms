@@ -42,6 +42,7 @@ async fn main() {
 
     let app = Router::new()
         .route("/status", get(status))
+        .route("/wms", get(wms::wms))
         .layer(TraceLayer::new_for_http())
         .layer(CompressionLayer::new())
         .layer(CorsLayer::permissive())
@@ -55,5 +56,5 @@ async fn main() {
     let addr = SocketAddr::from(([0, 0, 0, 0], args.port));
     Server::bind(&addr)
         .serve(app.into_make_service())
-        .await?;        
+        .await;        
 }

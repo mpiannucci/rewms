@@ -1,10 +1,9 @@
 use std::str::FromStr;
-use std::{io::Cursor, time::Duration};
+use std::{io::Cursor};
 
-use axum::body::{StreamBody, Bytes, Body};
 use axum::extract::{State, Query, RawQuery};
-use axum::response::{IntoResponse, Response};
-use futures::TryStreamExt;
+use axum::response::{IntoResponse};
+use axum_macros::debug_handler;
 use http::header::CONTENT_TYPE;
 use image::ImageOutputFormat;
 use reqwest::Url;
@@ -25,7 +24,7 @@ pub struct WmsMinMax {
     pub max: f64,
 }
 
-#[derive(Deserialize, Clone, Debug)]
+#[derive(Deserialize, Serialize, Clone, Debug)]
 pub struct WmsParams {
     #[serde(alias = "request", alias = "REQUEST")]
     pub request: String,
@@ -124,11 +123,11 @@ impl WmsParams {
     }
 }
 
-
+#[debug_handler]
 pub async fn wms(
     State(app_state): State<AppState>,
     Query(params): Query<WmsParams>,
-    RawQuery(query): RawQuery,
+    // RawQuery(query): RawQuery,
 ) -> Result<impl IntoResponse, WmsError> {
     // For now we are only hijacking requests if the user is asking for a values style
     if params.passthrough_request() {
@@ -137,7 +136,8 @@ pub async fn wms(
             app_state.wms_scheme,
             app_state.wms_host,
             app_state.wms_path,
-            query.unwrap()
+            ""
+            // query.unwrap()
         );
         return proxy(downstream_request).await;
     }
@@ -211,16 +211,11 @@ pub async fn wms(
     let mut w = Cursor::new(Vec::new());
     image_data.write_to(&mut w, ImageOutputFormat::Png).unwrap();
     let raw = w.into_inner();
-
-    let bytes = Bytes::from_static(raw.as_ref());
-    let body = Body::from(bytes).into_stream();
-
-    let streamable = StreamBody::new(body);
-    // Ok((
-    //     [(CONTENT_TYPE, "image/png;mode=32bit")], 
-    //     Bytes
-    // ))
-    Ok(streamable)
+    
+    Ok((
+        [(CONTENT_TYPE, "image/png;mode=32bit")], 
+        raw
+    ))
 }
 
 #[cfg(test)]
