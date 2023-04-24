@@ -1,16 +1,13 @@
+mod error;
 mod proxy;
 mod state;
 mod wms;
 
-use actix_cors::Cors;
-use actix_web::{
-    get,
-    middleware::Logger,
-    web::{Data},
-    App, HttpResponse, HttpServer, Responder,
-};
-use awc::Client;
-use clap::{Parser, command, arg};
+use std::net::SocketAddr;
+
+use axum::{routing::get, Router, Server};
+use clap::{arg, command, Parser};
+use tower_http::{compression::CompressionLayer, cors::CorsLayer, trace::TraceLayer};
 
 use crate::state::AppState;
 
@@ -29,30 +26,34 @@ struct Args {
     workers: usize,
 }
 
-#[get("/status")]
-async fn status() -> impl Responder {
-    HttpResponse::Ok().body("OK")
+async fn status() -> &'static str {
+    "Ok"
 }
 
-#[actix_web::main]
-async fn main() -> std::io::Result<()> {
+#[tokio::main]
+async fn main() {
+    tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::DEBUG)
+        .init();
+
     let args: Args = Args::parse();
 
-    env_logger::init_from_env(env_logger::Env::new().default_filter_or("info"));
+    let app_state = AppState::new(&args.wms_root);
 
-    log::info!("starting rewms server at http://localhost:{port}", port=args.port);
+    let app = Router::new()
+        .route("/status", get(status))
+        .layer(TraceLayer::new_for_http())
+        .layer(CompressionLayer::new())
+        .layer(CorsLayer::permissive())
+        .with_state(app_state);
 
-    HttpServer::new(move || {
-        App::new()
-            .app_data(Data::new(AppState::new(&args.wms_root)))
-            .app_data(Data::new(Client::default()))
-            .wrap(Logger::default())
-            .wrap(Cors::permissive())
-            .service(status)
-            .service(wms::wms)
-    })
-    .bind(("0.0.0.0", args.port))?
-    .workers(args.workers)
-    .run()
-    .await
+    tracing::info!(
+        "starting rewms server at http://localhost:{port}",
+        port = args.port
+    );
+
+    let addr = SocketAddr::from(([0, 0, 0, 0], args.port));
+    Server::bind(&addr)
+        .serve(app.into_make_service())
+        .await?;        
 }

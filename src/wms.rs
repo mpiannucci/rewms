@@ -1,17 +1,17 @@
+use std::str::FromStr;
 use std::{io::Cursor, time::Duration};
 
-use actix_web::{
-    error::ErrorInternalServerError,
-    get,
-    http::Uri,
-    web::{self},
-    HttpRequest, HttpResponse,
-};
-use awc::Client;
+use axum::body::{StreamBody, Bytes, Body};
+use axum::extract::{State, Query, RawQuery};
+use axum::response::{IntoResponse, Response};
+use futures::TryStreamExt;
+use http::header::CONTENT_TYPE;
 use image::ImageOutputFormat;
+use reqwest::Url;
 use serde::{Deserialize, Serialize};
-use thiserror::Error;
 
+
+use crate::error::{WmsError, wms_error_downstream, wms_error_image};
 use crate::proxy::proxy;
 use crate::state::AppState;
 
@@ -86,7 +86,7 @@ impl WmsParams {
         wms_host: &str,
         wms_path: &str,
         layer: &str,
-    ) -> Uri {
+    ) -> Url {
         let elevation = self
             .elevation
             .map(|e| format!("&elevation={e}"))
@@ -96,14 +96,8 @@ impl WmsParams {
             .as_ref()
             .map(|t| format!("&time={t}"))
             .unwrap_or("".to_string());
-        let path = format!("{wms_path}/wms/?service=WMS&request=GetMetadata&version=1.1.1&item=minmax&layername={layer}&layers={layer}&styles=&srs={srs}&bbox={bbox}&width={width}&height={height}{elevation}{time}", srs=self.srs.clone().unwrap(), bbox=self.bbox.clone().unwrap(), width=self.width.unwrap(), height=self.height.unwrap());
-
-        Uri::builder()
-            .scheme(wms_scheme)
-            .authority(wms_host)
-            .path_and_query(path)
-            .build()
-            .unwrap()
+        let path = format!("{wms_scheme}{wms_host}{wms_path}/wms/?service=WMS&request=GetMetadata&version=1.1.1&item=minmax&layername={layer}&layers={layer}&styles=&srs={srs}&bbox={bbox}&width={width}&height={height}{elevation}{time}", srs=self.srs.clone().unwrap(), bbox=self.bbox.clone().unwrap(), width=self.width.unwrap(), height=self.height.unwrap());
+        Url::from_str(&path).unwrap()
     }
 
     pub fn get_reference_map_url(
@@ -113,7 +107,7 @@ impl WmsParams {
         wms_path: &str,
         layer: &str,
         minmax: &WmsMinMax,
-    ) -> Uri {
+    ) -> Url {
         let elevation = self
             .elevation
             .map(|e| format!("&elevation={e}"))
@@ -123,39 +117,19 @@ impl WmsParams {
             .as_ref()
             .map(|t| format!("&time={t}"))
             .unwrap_or("".to_string());
-        let path = format!("{wms_path}/wms/?service=WMS&request=GetMap&version=1.1.1&layers={layer}&styles=raster/seq-GreysRev&format=image/png;mode=32bit&transparent=true&srs={srs}&bbox={bbox}&width={width}&height={height}&colorscalerange={min},{max}&numcolorbands=250{elevation}{time}",
+        let path = format!("{wms_scheme}{wms_host}{wms_path}/wms/?service=WMS&request=GetMap&version=1.1.1&layers={layer}&styles=raster/seq-GreysRev&format=image/png;mode=32bit&transparent=true&srs={srs}&bbox={bbox}&width={width}&height={height}&colorscalerange={min},{max}&numcolorbands=250{elevation}{time}",
         srs=self.srs.clone().unwrap(), bbox=self.bbox.clone().unwrap(), width=self.width.unwrap(), height=self.height.unwrap(), min=minmax.min, max=minmax.max);
 
-        Uri::builder()
-            .scheme(wms_scheme)
-            .authority(wms_host)
-            .path_and_query(path)
-            .build()
-            .unwrap()
+        Url::from_str(&path).unwrap()
     }
 }
 
-#[derive(Debug, Error)]
-enum WmsError {
-    #[error("Invalid layer in WMS request")]
-    InvalidLayer,
-}
 
-impl actix_web::error::ResponseError for WmsError {
-    fn status_code(&self) -> actix_web::http::StatusCode {
-        match self {
-            WmsError::InvalidLayer => actix_web::http::StatusCode::BAD_REQUEST,
-        }
-    }
-}
-
-#[get("/wms/")]
 pub async fn wms(
-    client: web::Data<Client>,
-    app_state: web::Data<AppState>,
-    req: HttpRequest,
-    params: web::Query<WmsParams>,
-) -> actix_web::Result<HttpResponse> {
+    State(app_state): State<AppState>,
+    Query(params): Query<WmsParams>,
+    RawQuery(query): RawQuery,
+) -> Result<impl IntoResponse, WmsError> {
     // For now we are only hijacking requests if the user is asking for a values style
     if params.passthrough_request() {
         let downstream_request = format!(
@@ -163,9 +137,9 @@ pub async fn wms(
             app_state.wms_scheme,
             app_state.wms_host,
             app_state.wms_path,
-            req.query_string()
+            query.unwrap()
         );
-        return proxy(client.as_ref(), downstream_request).await;
+        return proxy(downstream_request).await;
     }
 
     // We are limited to only one layer with this style, so pull the first layer only
@@ -184,15 +158,12 @@ pub async fn wms(
 
     // First fetch the minmax values for the layer, which we will use to scale the pixel data
     // from the reference images to actual values
-    let minmax = client
-        .get(minmax_url)
-        .timeout(Duration::from_secs(60))
-        .send()
+    let minmax = reqwest::get(minmax_url)
         .await
-        .map_err(ErrorInternalServerError)?
+        .map_err(wms_error_downstream)?
         .json::<WmsMinMax>()
         .await
-        .map_err(ErrorInternalServerError)?;
+        .map_err(wms_error_downstream)?;
 
     let reference_url = params.get_reference_map_url(
         &app_state.wms_scheme,
@@ -203,19 +174,16 @@ pub async fn wms(
     );
 
     // Fetch the image from the downstream wms, and then extract the bytes from the response
-    let raw_image_data = client
-        .get(reference_url)
-        .timeout(Duration::from_secs(60))
-        .send()
+    let raw_image_data = reqwest::get(reference_url)
         .await
-        .map_err(ErrorInternalServerError)?
-        .body()
+        .map_err(wms_error_downstream)?
+        .bytes()
         .await
-        .map_err(ErrorInternalServerError)?;
+        .map_err(wms_error_downstream)?;
 
     // Build the image representation from the raw bytes, reference images are always 32 bit pngs
     let mut image_data = image::load_from_memory(&raw_image_data)
-        .map_err(ErrorInternalServerError)?
+        .map_err(wms_error_image)?
         .to_rgba8();
 
     // This is done to match pyxms's behaviour, which uses matplotlibs colormapping and linspace to
@@ -244,11 +212,15 @@ pub async fn wms(
     image_data.write_to(&mut w, ImageOutputFormat::Png).unwrap();
     let raw = w.into_inner();
 
-    let response = HttpResponse::Ok()
-        .content_type("image/png;mode=32bit")
-        .body(raw);
+    let bytes = Bytes::from_static(raw.as_ref());
+    let body = Body::from(bytes).into_stream();
 
-    Ok(response)
+    let streamable = StreamBody::new(body);
+    // Ok((
+    //     [(CONTENT_TYPE, "image/png;mode=32bit")], 
+    //     Bytes
+    // ))
+    Ok(streamable)
 }
 
 #[cfg(test)]

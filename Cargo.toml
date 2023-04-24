@@ -6,20 +6,23 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-actix = "0.13.0"
-actix-cors = "0.6.4"
-actix-web = { version = "4", features = ["openssl"] }
-awc = { version = "3.1.0", features = ["openssl"] }
+axum = {version = "0.6.15", features = ["tracing"] }
+axum-macros = "0.3.7"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tower-http = { version = "0.4.0", features = ["cors", "trace", "compression-gzip"] }
+http = "0.2.9"
 clap = { version = "4.1.6", features = ["derive"] }
-env_logger = "0.10.0"
 futures = "0.3.25"
 image = "0.24.5"
 itertools = "0.10.5"
 log = "0.4.17"
 png = "0.17.7"
 qstring = "0.7.2"
-rayon = "1.6.1"
+rayon = "1.7"
+reqwest = { version = "0.11", features = ["json", "stream"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1.0.91"
 thiserror = "1.0"
 tokio = { version = "1", features = ["full"] }
+futures-util = "0.3.28"

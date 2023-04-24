@@ -1,15 +1,13 @@
-use std::time::Duration;
+use axum::{response::IntoResponse, body::StreamBody};
 
-use actix_web::{error, HttpResponse};
-use awc::Client;
+use crate::error::{WmsError, wms_error_downstream};
 
 
-pub async fn proxy(client: &Client, url: String) -> actix_web::Result<HttpResponse> {
-    client
-        .get(url)
-        .timeout(Duration::from_secs(60))
-        .send()
+pub async fn proxy(url: String) -> Result<impl IntoResponse, WmsError> {
+    let stream = reqwest::get(url)
         .await
-        .map_err(error::ErrorInternalServerError)
-        .and_then(|resp| Ok::<HttpResponse, error::Error>(HttpResponse::Ok().streaming(resp)))
+        .map_err(wms_error_downstream)?
+        .bytes_stream();
+
+    Ok(StreamBody::new(stream))
 }
